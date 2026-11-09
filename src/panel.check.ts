@@ -1,33 +1,46 @@
 // `orca plugin check` and `orca plugin shot --scenario` render the panel once per scenario. The
 // worker's answers are stubbed with the JSON of the conport CLI, so no scenario runs a process.
 import { defineCheck } from 'orca/testing'
-import { AGENTS, EMPTY_LIST, EPIC_LIST, EPIC_WITHOUT_PLAN, FAILED, QUESTION, RUNNING } from '../test/fixtures'
-import type { EpicList, EpicStatus } from './protocol'
+import { AGENTS, EMPTY_LIST, EPIC_LIST, EPIC_WITHOUT_PLAN, FAILED, idle, RUNNING, STOPPED, TASK_LIST } from '../test/fixtures'
+import type { EpicList, EpicStatus, OrcaProject } from './protocol'
 
 const ok = <T>(data: T) => ({ ok: true, data })
-const context = ok({ root: '/work/shop', project: 'shop-api', source: 'repository' })
-const idle = (epic: number): EpicStatus => ({ epic, phase: 'none', tasks: [], questions: [], outcome: null, paused: null, failure: null })
+const ROOT = '/work/shop'
+const PROJECTS: OrcaProject[] = [
+  { name: 'Shop', root: ROOT, kind: 'git', project: 'shop-api', source: 'repository', focused: true },
+  { name: 'Billing', root: '/work/billing', kind: 'git', project: 'billing-api', source: 'stored', focused: false },
+  { name: 'Docs', root: '/work/docs', kind: 'git', project: null, source: null, focused: false },
+  { name: 'Notes', root: '/work/notes', kind: 'folder', project: null, source: null, focused: false }
+]
+const ROLES = { implementer: 'claude', reviewer: 'codex', gapHunter: 'claude', finalReviewer: 'claude' }
 
-function scenario(list: EpicList, board: EpicStatus | null, epic: number | null) {
+/** The panel over `list`, on `tab`, with `epic` open and its run `status`. */
+function scenario(list: EpicList, { tab = 'launch', epic = null, status = null }: { tab?: string; epic?: number | null; status?: EpicStatus | null } = {}) {
   return {
     requests: {
-      'context.get': () => context,
+      'projects.list': () => ok(PROJECTS),
       'epics.list': () => ok(list),
-      'agents.get': () => ok({ agents: AGENTS.agents, chosen: null }),
-      'board.get': () => ok(board ?? idle(epic ?? 0))
+      'tasks.list': () => ok(TASK_LIST.tasks),
+      'agents.get': () => ok({ agents: AGENTS.agents, chosen: ROLES, preparer: 'claude' }),
+      'run.get': () => ok(status ?? idle(epic ?? 0))
     },
-    persisted: { workspace: { epic } }
+    persisted: { plugin: { tab, epics: epic === null ? {} : { [ROOT]: epic } } }
   }
 }
 
 export default defineCheck({
-  'empty-project': scenario(EMPTY_LIST, null, null),
-  'epic-without-plan': scenario(EPIC_WITHOUT_PLAN, null, null),
-  'ready-to-run': scenario(EPIC_LIST, idle(15), 15),
-  'running': scenario(EPIC_LIST, RUNNING, 7),
-  'question': scenario(EPIC_LIST, QUESTION, 7),
-  'failed': scenario(EPIC_LIST, FAILED, 7),
+  'empty-project': scenario(EMPTY_LIST),
+  'epics': scenario(EPIC_LIST),
+  'prepare': scenario(EPIC_LIST, { tab: 'prepare' }),
+  'epic-without-plan': scenario(EPIC_WITHOUT_PLAN, { tab: 'prepare' }),
+  'tasks': scenario(EPIC_LIST, { tab: 'tasks' }),
+  'ready-to-run': scenario(EPIC_LIST, { epic: 15, status: idle(15) }),
+  'running': scenario(EPIC_LIST, { epic: 7, status: RUNNING }),
+  'failed': scenario(EPIC_LIST, { epic: 7, status: FAILED }),
+  'stopped': scenario(EPIC_LIST, { epic: 7, status: STOPPED }),
   'no-project': {
-    requests: { 'context.get': () => ok({ root: '/work/shop', project: null, source: null }) }
+    requests: {
+      'projects.list': () => ok(PROJECTS.map((p) => (p.root === ROOT ? { ...p, project: null, source: null } : p)))
+    }
   }
 })

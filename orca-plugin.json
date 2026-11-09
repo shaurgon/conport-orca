@@ -2,8 +2,8 @@
   "manifestVersion": 2,
   "id": "conport-orca",
   "name": "ConPort Epics",
-  "version": "0.1.0",
-  "description": "Runs a ConPort epic with its spec and plan through Orca agents: pick an agent per role, start the run, follow the board, answer the stop-list questions.",
+  "version": "0.2.0",
+  "description": "Controls ConPort projects from Orca: the epics of a project by milestone, their start, continuation and stop with an agent per role, an agent to prepare an epic without a spec or plan, and the tasks outside the epics handed to an agent to do or to review.",
   "license": "MIT",
   "engines": {
     "orca": ">=1.4.248"
@@ -20,18 +20,6 @@
         "entry": "src/panel.tsx",
         "ui": "components"
       }
-    ],
-    "events": [
-      {
-        "on": "agent.status.changed"
-      }
-    ],
-    "statusBarItems": [
-      {
-        "id": "run",
-        "icon": "layers",
-        "tooltip": "ConPort: epic run"
-      }
     ]
   },
   "capabilities": [
@@ -43,9 +31,6 @@
     },
     {
       "kind": "terminal:send"
-    },
-    {
-      "kind": "notifications:show"
     },
     {
       "kind": "storage:own"

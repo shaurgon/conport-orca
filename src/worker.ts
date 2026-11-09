@@ -1,32 +1,19 @@
-// The plugin's worker: runs the conport CLI and orca as child processes for the panel, keeps
-// the board of the watched epic current in the status bar, and tells about new questions.
+// The plugin's worker: runs the conport CLI and orca as child processes for the panel. It reads
+// only when the panel asks: no timer, no status bar item, no notification — the state of the
+// agents is Orca's own.
 import { readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
-import { CONPORT, interpret, journalCommand, runCommand } from './cli'
+import { CONPORT, commandLine, handTask, interpret, missingDocument, PREPARE_AGENTS, prepareTask, runCommand } from './cli'
 import { runProcess } from './exec'
-import type { AgentKind, EpicRef, EpicStatus, RepoContext, Result, Roles } from './protocol'
-import { ACTIVE_PHASES, PHASE, statusLine } from './text'
+import type { AgentKind, EpicList, EpicRef, EpicStatus, OrcaProject, RepoContext, Result, Roles, TaskList } from './protocol'
+import { AGENT_MISSING_ACTION, PREPARE_AGENTS_ACTION } from './text'
 
-/** How the worker starts the two programs it drives, and how often it reads the board. */
+/** How the worker starts the two programs it drives. */
 export interface WorkerDeps {
   conport: readonly string[]
   orca: readonly string[]
-  timing?: Partial<Timing>
 }
-
-interface Timing {
-  /** How often the board of a live run is read again. */
-  pollMs: number
-  /** The delay before reading the board after a run starts or an agent changes state. */
-  nudgeMs: number
-  /** How long a started run may show no phase (the CLI is being fetched, preflight runs). */
-  startGraceMs: number
-}
-
-const TIMING: Timing = { pollMs: 15_000, nudgeMs: 3_000, startGraceMs: 180_000 }
-const STATUS_ITEM = 'run'
-const WATCH_KEY = 'watch'
 
 const TRUNCATED = (): { ok: false; error: { code: string; message: string; action: string } } =>
   fail('workspaces_truncated', 'Orca отдала неполный список рабочих мест', 'уберите лишние рабочие места из Orca и повторите')
@@ -38,10 +25,6 @@ const fail = (code: string, message: string, action = ''): { ok: false; error: {
   ok: false,
   error: { code, message, action }
 })
-
-function sameRef(a: EpicRef | null, b: EpicRef): boolean {
-  return a !== null && a.project === b.project && a.epic === b.epic && a.root === b.root
-}
 
 /** CONPORT_PROJECT_NAME from `.claude/settings.local.json` of the repository's main working tree. */
 async function repositoryProject(root: string): Promise<string | null> {
@@ -60,23 +43,10 @@ export function createWorker(deps: WorkerDeps): {
   activate: (orca: OrcaWorkerApi) => void
   deactivate: () => void
 } {
-  const timing: Timing = { ...TIMING, ...deps.timing }
-  let timer: ReturnType<typeof setTimeout> | undefined
-  let stopped = false
-
-  const deactivate = (): void => {
-    stopped = true
-    clearTimeout(timer)
-  }
+  // Nothing outlives a request: there is nothing to stop.
+  const deactivate = (): void => undefined
 
   const activate = (orca: OrcaWorkerApi): void => {
-    stopped = false
-    let watch: EpicRef | null = null
-    let livePhase = false
-    /** When the panel last started a run of the watched epic. */
-    let startedAt = 0
-    const asked = new Set<string>()
-
     const conport = async <T>(args: string[], cwd?: string): Promise<Result<T>> =>
       interpret('conport', await runProcess([...deps.conport, ...args], cwd), basename(deps.conport[0] ?? '')) as Result<T>
 
@@ -87,6 +57,39 @@ export function createWorker(deps: WorkerDeps): {
       const result = (answer.data as { result?: unknown }).result
       if (result === undefined) return fail('bad_output', 'orca ответил без result', 'обновите Orca')
       return { ok: true, data: result as T }
+    }
+
+    /**
+     * Of several workspaces sharing the focused name, the one that holds a terminal of the
+     * focus: the host names the focus's terminals by the handles orca lists per workspace.
+     */
+    const byTerminals = async (
+      candidates: ReadonlyArray<{ path: string }>,
+      focus: { displayName: string; terminals: ReadonlyArray<{ id: string }> }
+    ): Promise<Result<string>> => {
+      const ambiguous = fail(
+        'workspace_ambiguous',
+        `в Orca несколько рабочих мест «${focus.displayName}», какое в фокусе — не понять`,
+        'откройте терминал в нужном рабочем месте Orca и повторите'
+      )
+      const focused = new Set(focus.terminals.map((t) => t.id))
+      if (focused.size === 0) return ambiguous
+      const matching: string[] = []
+      let firstRefusal: Extract<Result<never>, { ok: false }> | null = null
+      let listed = false
+      for (const { path } of candidates) {
+        const list = await orcaCli<{ terminals?: Array<{ handle: string }> }>(['terminal', 'list', '--worktree', `path:${path}`])
+        // A workspace orca cannot list does not match; only when none is listed is the refusal told.
+        if (!list.ok) {
+          firstRefusal ??= list
+          continue
+        }
+        listed = true
+        if ((list.data.terminals ?? []).some((t) => focused.has(t.handle))) matching.push(path)
+      }
+      if (!listed && firstRefusal) return firstRefusal
+      const [match, ...more] = matching
+      return match !== undefined && more.length === 0 ? { ok: true, data: match } : ambiguous
     }
 
     /**
@@ -105,39 +108,28 @@ export function createWorker(deps: WorkerDeps): {
       const candidates = onBranch.length > 0 ? onBranch : named
       const [workspace, ...others] = candidates
       if (workspace && others.length === 0) return { ok: true, data: workspace.path }
-      if (workspace) {
-        return fail(
-          'workspace_ambiguous',
-          `в Orca несколько рабочих мест «${focus.displayName}», какое в фокусе — не понять`,
-          'переименуйте одно из них в Orca'
-        )
-      }
+      if (workspace) return byTerminals(candidates, focus)
       if (truncated) return TRUNCATED()
       return fail('no_workspace', `рабочего места «${focus.displayName}» нет в списке Orca`, 'откройте рабочее место репозитория')
     }
 
-    const repoRoot = async (): Promise<Result<string>> => {
+    /** The id orca gives the repository of the workspace in focus. */
+    const focusedRepoId = async (): Promise<Result<string>> => {
       const focused = await focusedPath()
       if (!focused.ok) return focused
       const shown = await orcaCli<{ worktree?: { repoId?: string } }>(['worktree', 'show', '--worktree', `path:${focused.data}`])
       if (!shown.ok) return shown
       const repoId = shown.data.worktree?.repoId
       if (!repoId) return fail('no_repository', 'рабочее место в фокусе не принадлежит репозиторию', 'откройте рабочее место репозитория')
-      const repo = await orcaCli<{ repo?: { path?: string } }>(['repo', 'show', '--repo', `id:${repoId}`])
-      if (!repo.ok) return repo
-      const path = repo.data.repo?.path
-      if (!path) return fail('bad_output', 'orca не назвал путь репозитория', 'обновите Orca')
-      return { ok: true, data: path }
+      return { ok: true, data: repoId }
     }
 
-    const contextOf = async (root: string): Promise<Result<RepoContext>> => {
+    const contextOf = async (root: string): Promise<RepoContext> => {
       const fromRepository = await repositoryProject(root)
-      if (fromRepository) return { ok: true, data: { root, project: fromRepository, source: 'repository' } }
+      if (fromRepository) return { root, project: fromRepository, source: 'repository' }
       const stored = await orca.storage.get(`project:${root}`)
-      if (typeof stored === 'string' && stored !== '') {
-        return { ok: true, data: { root, project: stored, source: 'stored' } }
-      }
-      return { ok: true, data: { root, project: null, source: null } }
+      if (typeof stored === 'string' && stored !== '') return { root, project: stored, source: 'stored' }
+      return { root, project: null, source: null }
     }
 
     /** A terminal in the repository root, which must be a workspace of Orca. */
@@ -152,92 +144,56 @@ export function createWorker(deps: WorkerDeps): {
       return { ok: true, data: terminalId }
     }
 
-    const showStatus = async (board: Result<EpicStatus>, epic: number): Promise<void> => {
-      const update = board.ok
-        ? {
-            id: STATUS_ITEM,
-            text: statusLine(board.data),
-            tone: board.data.questions.length > 0 ? ('warning' as const) : ('neutral' as const),
-            tooltip: `ConPort: прогон эпика ${epic} — ${PHASE[board.data.phase]}`,
-            visible: board.data.phase !== 'none'
-          }
-        : {
-            id: STATUS_ITEM,
-            text: `эпик ${epic}: нет ответа`,
-            tone: 'danger' as const,
-            tooltip: `${board.error.message} — ${board.error.action}`,
-            visible: true
-          }
+    /** Reads the run of an epic once. */
+    const readRun = (ref: EpicRef): Promise<Result<EpicStatus>> =>
+      conport<EpicStatus>(['epic', 'status', String(ref.epic), '--project', ref.project, '--json'], ref.root)
+
+    /** The repository id of the focus, or null when neither the host nor orca can tell it. */
+    const focusedRepo = async (): Promise<string | null> => {
       try {
-        await orca.host.call('statusBar.update', update)
+        const focus = await focusedRepoId()
+        return focus.ok ? focus.data : null
       } catch (error) {
-        orca.log(`status bar: ${String(error)}`)
+        orca.log(`focus: ${String(error)}`)
+        return null
       }
     }
 
-    const tellQuestions = async (status: EpicStatus): Promise<void> => {
-      for (const q of status.questions) {
-        const key = `${status.epic}:${q.task ?? 'epic'}:${q.case}:${q.text}`
-        if (asked.has(key)) continue
-        asked.add(key)
-        const about = q.task === null ? 'вопрос по эпику' : `вопрос по задаче ${q.task}`
-        try {
-          await orca.host.call('notifications.show', { title: `Эпик ${status.epic}: ${about}`, body: q.text })
-        } catch (error) {
-          orca.log(`notification: ${String(error)}`)
-        }
+    // Orca's projects in the order of its sidebar. The focus only marks one of them: a focus
+    // nobody can tell (none, several workspaces of one name, the host failing) keeps no list away.
+    orca.panels.handle('projects.list', async () => {
+      const listed = await orcaCli<{ repos?: Array<{ id?: string; displayName?: string; path?: string; kind?: string }> }>([
+        'repo',
+        'list'
+      ])
+      if (!listed.ok) return listed
+      const focus = await focusedRepo()
+      const projects: OrcaProject[] = []
+      for (const repo of listed.data.repos ?? []) {
+        if (!repo.path) continue
+        const kind = repo.kind === 'folder' ? 'folder' : 'git'
+        // A folder cannot run an epic: its settings are not read.
+        const context = kind === 'git' ? await contextOf(repo.path) : { root: repo.path, project: null, source: null }
+        projects.push({
+          ...context,
+          name: repo.displayName || basename(normalize(repo.path)),
+          kind,
+          focused: focus !== null && repo.id === focus
+        })
       }
-    }
-
-    const schedule = (delay: number): void => {
-      clearTimeout(timer)
-      if (stopped || watch === null) return
-      const ref = watch
-      timer = setTimeout(() => void refresh(ref), delay)
-      timer.unref?.()
-    }
-
-    /** Reads the board; for the watched epic also updates the status bar and the open panels. */
-    const refresh = async (ref: EpicRef): Promise<Result<EpicStatus>> => {
-      const board = await conport<EpicStatus>(
-        ['epic', 'status', String(ref.epic), '--project', ref.project, '--json'],
-        ref.root
-      )
-      if (stopped || !sameRef(watch, ref)) return board
-      // A read that failed (ConPort or the network away) keeps the phase last read: a live run stays watched.
-      if (board.ok) livePhase = ACTIVE_PHASES.includes(board.data.phase)
-      const starting = board.ok && board.data.phase === 'none' && Date.now() - startedAt < timing.startGraceMs
-      await showStatus(board, ref.epic)
-      if (board.ok) await tellQuestions(board.data)
-      orca.panels.post('board.changed', { project: ref.project, epic: ref.epic, board })
-      if (livePhase || starting) schedule(timing.pollMs)
-      return board
-    }
-
-    const watchEpic = async (ref: EpicRef): Promise<void> => {
-      if (!sameRef(watch, ref)) {
-        asked.clear()
-        startedAt = 0
-      }
-      watch = { project: ref.project, root: ref.root, epic: ref.epic }
-      await orca.storage.set(WATCH_KEY, { project: ref.project, root: ref.root, epic: ref.epic })
-    }
-
-    orca.panels.handle('context.get', async () => {
-      const root = await repoRoot()
-      return root.ok ? contextOf(root.data) : root
+      return { ok: true, data: projects }
     })
 
     orca.panels.handle('project.set', async ({ root, project }) => {
       const value = project.trim()
       if (value === '') return fail('empty_project', 'проект не назван', 'впишите имя или handle проекта')
       await orca.storage.set(`project:${root}`, value)
-      return contextOf(root)
+      return { ok: true, data: await contextOf(root) }
     })
 
     orca.panels.handle('project.forget', async ({ root }) => {
       await orca.storage.delete(`project:${root}`)
-      return contextOf(root)
+      return { ok: true, data: await contextOf(root) }
     })
 
     orca.panels.handle('epics.list', ({ project, root }) =>
@@ -257,103 +213,120 @@ export function createWorker(deps: WorkerDeps): {
 
     // The CLI looks for each command on the PATH of Orca's app, which is often not the PATH of a
     // terminal; a kind Orca runs is one `worker-start --agent` can start, found or not.
-    orca.panels.handle('agents.get', async ({ project, root }) => {
+    const agentKinds = async (root: string): Promise<Result<AgentKind[]>> => {
       const answer = await conport<{ agents: AgentKind[] }>(['epic', 'agents', '--json'], root)
       if (!answer.ok) return answer
       const inOrca = await kindsInOrca()
-      const agents = answer.data.agents.map((a) => (a.found || !inOrca.has(a.id) ? a : { ...a, found: true }))
+      return { ok: true, data: answer.data.agents.map((a) => (a.found || !inOrca.has(a.id) ? a : { ...a, found: true })) }
+    }
+
+    orca.panels.handle('agents.get', async ({ project, root }) => {
+      const agents = await agentKinds(root)
+      if (!agents.ok) return agents
       const chosen = (await orca.storage.get(`roles:${project}`)) as Roles | null
-      return { ok: true, data: { agents, chosen } }
+      const preparer = await orca.storage.get(`prepare:${project}`)
+      return { ok: true, data: { agents: agents.data, chosen, preparer: typeof preparer === 'string' ? preparer : null } }
     })
 
-    orca.panels.handle('board.get', async (ref) => {
-      await watchEpic(ref)
-      return refresh(ref)
-    })
+    /**
+     * Brings a terminal to the front. When orca cannot, the panel has already named the terminal:
+     * the failure is only logged.
+     */
+    const bringForward = async (terminal: string): Promise<void> => {
+      const shown = await orcaCli(['terminal', 'switch', '--terminal', terminal])
+      if (!shown.ok) orca.log(`terminal switch: ${shown.error.code}: ${shown.error.message}`)
+    }
+
+    /**
+     * The command of an agent that can be told its task as its first argument and is found:
+     * only such an agent starts a talk with the task it is given.
+     */
+    const agentCommand = async (root: string, agent: string): Promise<Result<string>> => {
+      if (!PREPARE_AGENTS.includes(agent)) {
+        return fail('agent_cannot_prepare', `агент «${agent}» не принимает задание при запуске`, PREPARE_AGENTS_ACTION)
+      }
+      const kinds = await agentKinds(root)
+      if (!kinds.ok) return kinds
+      const kind = kinds.data.find((a) => a.id === agent)
+      if (!kind?.found) return fail('agent_not_found', `агент «${agent}» не найден`, AGENT_MISSING_ACTION)
+      return { ok: true, data: kind.command }
+    }
+
+    /** Opens `agent` with its one task in a terminal of the root, and remembers the agent for the project. */
+    const startAgent = async (
+      { project, root, agent }: { project: string; root: string; agent: string },
+      title: string,
+      task: string
+    ): Promise<Result<{ terminal: string }>> => {
+      const command = await agentCommand(root, agent)
+      if (!command.ok) return command
+      const terminal = await terminalInRoot(root, title, commandLine([command.data, task]))
+      if (!terminal.ok) return terminal
+      // The person talks with the agent there: the terminal comes to the front.
+      await bringForward(terminal.data)
+      await orca.storage.set(`prepare:${project}`, agent)
+      return { ok: true, data: { terminal: terminal.data } }
+    }
+
+    orca.panels.handle('run.get', (ref) => readRun(ref))
 
     orca.panels.handle('run.start', async ({ roles, ...ref }) => {
       const command = runCommand(ref.epic, ref.project, roles)
-      const title = `conport epic ${ref.epic}`
-      const terminal = await terminalInRoot(ref.root, title, command)
+      const terminal = await terminalInRoot(ref.root, `conport epic ${ref.epic}`, command)
       if (!terminal.ok) return terminal
-      // Preflight refusals of the run are printed in that terminal: bring it forward, or say where it is.
-      const shown = await orcaCli(['terminal', 'switch', '--terminal', terminal.data])
-      if (!shown.ok) {
-        try {
-          await orca.host.call('notifications.show', {
-            title: `Эпик ${ref.epic}: прогон запущен`,
-            body: `Терминал «${title}» в корне репозитория: там видно, если прогон откажет при подготовке.`
-          })
-        } catch (error) {
-          orca.log(`notification: ${String(error)}`)
-        }
-      }
+      // Refusals at the start are printed in that terminal: it comes to the front.
+      await bringForward(terminal.data)
       await orca.storage.set(`roles:${ref.project}`, { ...roles })
-      await watchEpic(ref)
-      startedAt = Date.now()
-      schedule(timing.nudgeMs)
       return { ok: true, data: { terminalId: terminal.data, command } }
     })
 
-    orca.panels.handle('run.answer', async ({ task, choice, ...ref }) => {
-      const args = ['epic', 'answer', String(ref.epic)]
-      if (task !== null) args.push('--task', String(task))
-      args.push('--choice', choice, '--project', ref.project, '--json')
-      const answer = await conport(args, ref.root)
-      if (!answer.ok) return answer
-      return refresh(ref)
+    // An epic without a spec or a plan: its agent talks with the person in a terminal of the root.
+    // What the epic lacks is read afresh, so the task fits the epic as it is now.
+    orca.panels.handle('epic.prepare', async ({ project, root, epic, agent }) => {
+      const list = await conport<EpicList>(['epic', 'list', '--project', project, '--json'], root)
+      if (!list.ok) return list
+      const found = list.data.epics.find((e) => e.id === epic)
+      if (!found) return fail('epic_not_found', `эпика ${epic} нет в проекте`, 'нажмите «Обновить»')
+      if (found.runnable) return fail('epic_ready', `эпик ${epic} уже готов к запуску`, 'нажмите «Обновить» и запустите его')
+      const missing = missingDocument(found.reason)
+      if (missing === null) {
+        return fail(
+          'epic_not_preparable',
+          `эпик ${epic} не готов к запуску по причине, которую подготовка не исправит`,
+          'нажмите «Обновить» и посмотрите эпик во вкладке «Подготовить»'
+        )
+      }
+      return startAgent({ project, root, agent }, `conport prepare ${epic}`, prepareTask({ epic, project: list.data.project, missing }))
+    })
+
+    orca.panels.handle('tasks.list', async ({ project, root }) => {
+      const list = await conport<TaskList>(['task', 'list', '--project', project, '--json'], root)
+      return list.ok ? { ok: true, data: list.data.tasks } : list
+    })
+
+    // A task outside the epics, to do or to review: read afresh, so a task done or taken
+    // meanwhile is not handed again.
+    orca.panels.handle('task.hand', async ({ project, root, task, agent, mode }) => {
+      const list = await conport<TaskList>(['task', 'list', '--project', project, '--json'], root)
+      if (!list.ok) return list
+      const found = list.data.tasks.find((t) => t.id === task)
+      if (!found) return fail('task_not_found', `задачи ${task} нет среди открытых задач вне эпиков`, 'нажмите «Обновить»')
+      if (found.status !== (mode === 'do' ? 'TODO' : 'REVIEW')) {
+        return fail(
+          'task_moved',
+          mode === 'do' ? `задачу ${task} уже взяли в работу` : `задача ${task} не ждёт проверки`,
+          'нажмите «Обновить»'
+        )
+      }
+      const title = `conport ${mode === 'do' ? 'task' : 'review'} ${task}`
+      return startAgent({ project, root, agent }, title, handTask({ task, project: list.data.project, mode, agent }))
     })
 
     orca.panels.handle('run.stop', async (ref) => {
       const answer = await conport(['epic', 'stop', String(ref.epic), '--project', ref.project, '--json'], ref.root)
       if (!answer.ok) return answer
-      return refresh(ref)
+      return readRun(ref)
     })
-
-    orca.panels.handle('task.open', async ({ worktree }) => {
-      const list = await orcaCli<{ terminals?: Array<{ handle: string }> }>([
-        'terminal',
-        'list',
-        '--worktree',
-        `path:${worktree}`
-      ])
-      if (!list.ok) return list
-      const handle = list.data.terminals?.[0]?.handle
-      if (handle) {
-        const shown = await orcaCli(['terminal', 'switch', '--terminal', handle])
-        return shown.ok ? { ok: true, data: { terminal: handle } } : shown
-      }
-      const created = await orcaCli<{ terminal?: { handle?: string } }>([
-        'terminal',
-        'create',
-        '--worktree',
-        `path:${worktree}`,
-        '--focus'
-      ])
-      if (!created.ok) return created
-      return { ok: true, data: { terminal: created.data.terminal?.handle ?? '' } }
-    })
-
-    orca.panels.handle('task.journal', async ({ project, root, task }) => {
-      const terminal = await terminalInRoot(root, `журнал задачи ${task}`, journalCommand(task, project))
-      return terminal.ok ? { ok: true, data: { terminalId: terminal.data } } : terminal
-    })
-
-    // An agent of the run changed state: the board likely changed too.
-    orca.events.on('agent.status.changed', () => {
-      if (livePhase) schedule(timing.nudgeMs)
-    })
-
-    // Bring back the watched epic after a restart, or hide the status bar item.
-    void (async () => {
-      const saved = (await orca.storage.get(WATCH_KEY)) as EpicRef | null
-      if (saved && typeof saved.epic === 'number') {
-        watch = saved
-        await refresh(saved)
-      } else {
-        await orca.host.call('statusBar.update', { id: STATUS_ITEM, visible: false }).catch(() => undefined)
-      }
-    })()
   }
 
   return { activate, deactivate }

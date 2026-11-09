@@ -43,12 +43,11 @@ export interface Fake {
 function orcaRepo(root: string, focused: string, pluginRepo: string): FakeAnswer[] {
   const show = (path: string, repoId: string) =>
     JSON.stringify({ ok: true, result: { worktree: { path, repoId } } })
-  const repo = (id: string, path: string) => JSON.stringify({ ok: true, result: { repo: { id, path } } })
+  const repos = [{ id: 'repo-focus', displayName: 'repo', path: root, kind: 'git' }]
   return [
+    { match: 'repo list ', stdout: JSON.stringify({ ok: true, result: { repos } }) },
     { match: `worktree show --worktree path:${focused} `, stdout: show(focused, 'repo-focus') },
-    { match: 'worktree show --worktree active ', stdout: show(pluginRepo, 'repo-plugin') },
-    { match: 'repo show --repo id:repo-focus ', stdout: repo('repo-focus', root) },
-    { match: 'repo show --repo id:repo-plugin ', stdout: repo('repo-plugin', pluginRepo) }
+    { match: 'worktree show --worktree active ', stdout: show(pluginRepo, 'repo-plugin') }
   ]
 }
 
@@ -65,10 +64,17 @@ export async function until(ready: () => boolean, limitMs = 3_000): Promise<void
   }
 }
 
+/** The folders of a fake machine, for answers that name them. */
+export interface FakeDirs {
+  /** A temporary folder for anything else the test needs. */
+  dir: string
+  root: string
+  focused: string
+}
+
 export function fake(
   conport: FakeAnswer[],
-  orca?: FakeAnswer[],
-  timing?: { pollMs?: number; nudgeMs?: number; startGraceMs?: number }
+  orca?: FakeAnswer[] | ((dirs: FakeDirs) => FakeAnswer[])
 ): Fake {
   const dir = mkdtempSync(join(tmpdir(), 'conport-orca-'))
   const root = join(dir, 'repo')
@@ -89,8 +95,14 @@ export function fake(
       .map((line) => JSON.parse(line) as string[])
   const { activate, deactivate } = createWorker({
     conport: [process.execPath, FAKE_CLI, scenario('conport', conport)],
-    orca: [process.execPath, FAKE_CLI, scenario('orca', [...(orca ?? []), ...orcaRepo(root, focused, pluginRepo)])],
-    timing
+    orca: [
+      process.execPath,
+      FAKE_CLI,
+      scenario('orca', [
+        ...(typeof orca === 'function' ? orca({ dir, root, focused }) : (orca ?? [])),
+        ...orcaRepo(root, focused, pluginRepo)
+      ])
+    ]
   })
   const workspaces = [
     { id: 'ws-elsewhere', kind: 'worktree', name: 'feature', path: join(dir, 'other', 'feature'), branch: 'hotfix', hostId: null },
