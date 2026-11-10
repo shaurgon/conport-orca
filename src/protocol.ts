@@ -33,8 +33,6 @@ export interface OrcaProject extends RepoContext {
   focused: boolean
 }
 
-export type RunPhase = 'none' | 'preparing' | 'running' | 'finishing' | 'held' | 'ready' | 'stopped'
-
 /** The milestone of an epic, as `conport epic list` names it. */
 export interface Milestone {
   id: number
@@ -62,7 +60,6 @@ export interface EpicList {
     milestone: Milestone | null
     runnable: boolean
     reason: string | null
-    run: { phase: RunPhase } | null
     /**
      * Every task closed, and the core's newest readiness entry of the epic says it is ready to
      * merge, written after the last change of its tasks.
@@ -94,34 +91,6 @@ export interface TaskList {
 /** What an agent is handed a task for: to do it, to review the work done, or to fix what the review found. */
 export type HandMode = 'do' | 'review' | 'fix'
 
-export type RunOutcome =
-  | null
-  | { kind: 'ready'; head: string }
-  | { kind: 'held'; reasons: string[] }
-  | { kind: 'stopped' }
-
-/** A stop-list question of an epic's run, the fields the panel reads: its text and options are Orca's to show. */
-export interface RunQuestion {
-  /** The task it is about; null for the epic itself. */
-  task: number | null
-  case: number
-  /** Orca would not take it: no gate in Orca holds it, it is answered with `conport epic answer` only. */
-  refused: boolean
-}
-
-/**
- * `conport epic status <N> --json`, the fields the panel reads: the CLI prints more (the tasks of
- * the run), which are Orca's to show.
- */
-export interface EpicStatus {
-  epic: number
-  phase: RunPhase
-  questions: RunQuestion[]
-  outcome: RunOutcome
-  /** Why the last run failed, as it refused: given only while the run is held. */
-  failure: Refusal | null
-}
-
 /** `conport epic agents --json` */
 export interface AgentKind {
   id: string
@@ -130,7 +99,7 @@ export interface AgentKind {
   found: boolean
 }
 
-/** The agent chosen for each role of a run. */
+/** The subagent type of the epic's harness chosen for each role of an epic. */
 export interface Roles {
   implementer: string
   reviewer: string
@@ -138,12 +107,62 @@ export interface Roles {
   finalReviewer: string
 }
 
+/** How an epic is done: by the SDD skill in a working copy of its own, or by the workflow `/conport:epic`. */
+export type Way = 'sdd' | 'workflow'
+
 /** Names the epic a request is about. */
 export interface EpicRef {
-  /** The project handle (or name, before the handle is known). */
+  /**
+   * The project: its handle, or the name the person wrote where the CLI resolves it. The
+   * requests that read what a start remembered — `epic.session` and `terminal.show` — take the
+   * handle only (`project` of `EpicList`) and refuse anything else with `project_not_handle`.
+   */
   project: string
   root: string
   epic: number
+}
+
+/**
+ * What is chosen for an epic and whether its session is alive. The choice is what the last start
+ * of the epic remembered; an epic never started answers the defaults.
+ */
+export interface EpicSession {
+  way: Way
+  harness: string
+  roles: Roles
+  /** The path of the working copy on the branch `epic-<N>`; null when there is none. */
+  worktree: string | null
+  alive: boolean
+  /** The terminal of the live session, as orca lists it; null when no session is alive. */
+  terminal: string | null
+  /** Branches `epic<N>/…` of an earlier run of the workflow are there. */
+  workflowBranches: boolean
+}
+
+export type EpicTaskStatus = 'TODO' | 'IN_PROGRESS' | 'REVIEW' | 'BLOCKED' | 'PARKED' | 'DONE' | 'CANCELLED'
+
+/** A task of an epic, as ConPort names it. */
+export interface EpicTask {
+  id: number
+  title: string
+  status: EpicTaskStatus
+}
+
+/** A subagent type of a harness, as `conport epic subagents` names it. */
+export interface Subagent {
+  type: string
+  source: 'plugin' | 'user' | 'project'
+  /** The plugin the type comes from; null for the user's and the project's. */
+  plugin: string | null
+  description: string
+}
+
+/** `conport epic subagents --harness <kind> --json` */
+export interface SubagentList {
+  harness: string
+  /** False for a harness that has no subagents with types. */
+  typed: boolean
+  subagents: Subagent[]
 }
 
 declare module 'orca' {
@@ -158,24 +177,43 @@ declare module 'orca' {
     /** The open tasks of the project outside its epics. */
     'tasks.list': { input: { project: string; root: string }; output: Result<OutsideTask[]> }
     /**
-     * The agent kinds the CLI knows, the roles last chosen in this project and the agent last
-     * chosen in it to prepare an epic or to take a task.
+     * The agent kinds the CLI knows and the agent last chosen in this project to prepare an epic
+     * or to take a task.
      */
     'agents.get': {
       input: { project: string; root: string }
-      output: Result<{ agents: AgentKind[]; chosen: Roles | null; preparer?: string | null }>
+      output: Result<{ agents: AgentKind[]; preparer?: string | null }>
     }
-    /** Reads the state of an epic's run once: the panel asks when the epic is opened. */
-    'run.get': { input: EpicRef; output: Result<EpicStatus> }
-    /** Opens a terminal in the repository root with the run command. */
-    'run.start': { input: EpicRef & { roles: Roles }; output: Result<{ terminalId: string; command: string }> }
-    /** Stops the agents of the epic, then reads its run once. */
-    'run.stop': { input: EpicRef; output: Result<EpicStatus> }
     /**
      * Opens a terminal in the repository root with the chosen agent, told to prepare the epic
      * with the person: the spec it lacks, the plan, their upload to ConPort.
      */
     'epic.prepare': { input: EpicRef & { agent: string }; output: Result<{ terminal: string }> }
+    /**
+     * Starts an epic with the harness chosen for it. By the SDD skill: finds or creates the
+     * working copy of the branch `epic-<N>` and opens the harness there with the task of the
+     * epic. By the workflow: opens the harness in the repository root, and `worktree` is null.
+     * The harness, the roles and the way are remembered for the epic, with the terminal opened.
+     */
+    'epic.start': {
+      input: EpicRef & { way: Way; harness: string; roles: Roles }
+      output: Result<{ terminal: string; way: Way; worktree: string | null }>
+    }
+    /**
+     * The way, the harness and the roles of an epic, and whether its session is alive: orca is
+     * asked for its working copies and terminals, ConPort is not asked. `project` is the handle
+     * the epic list answered with; a name is refused, since a start remembers by the handle.
+     */
+    'epic.session': { input: EpicRef; output: Result<EpicSession> }
+    /** Every task of an epic in ConPort, by its number, the cancelled ones last. */
+    'epic.tasks': { input: EpicRef; output: Result<EpicTask[]> }
+    /** The subagent types of a harness, read in the repository root. */
+    'subagents.get': { input: { root: string; harness: string }; output: Result<SubagentList> }
+    /**
+     * Brings the terminal of the epic's live session to the front, found anew by the rule of
+     * `epic.session`; refused when the epic has no live session. `project` is the handle.
+     */
+    'terminal.show': { input: EpicRef; output: Result<null> }
     /**
      * Opens a terminal in the repository root with the chosen agent, told to do a task outside
      * the epics or to review the work done on it.

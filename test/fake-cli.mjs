@@ -1,4 +1,4 @@
-// A stand-in for the `conport` and `orca` executables in the plugin's tests.
+// A stand-in for the `conport`, `orca` and `git` executables in the plugin's tests.
 // Usage: node fake-cli.mjs <scenario.json> <args...>
 // The scenario holds `log` (a file that gets one JSON line of args per call) and
 // `answers`: the first answer whose `match` starts the joined args is printed as

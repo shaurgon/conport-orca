@@ -2,7 +2,7 @@
 import type { HandMode, OutsideTask, Refusal, Result, Roles } from './protocol'
 
 /** The conport CLI release the panel runs: kept equal to the CLI of the same repository. */
-export const CLI_VERSION = '0.6.3'
+export const CLI_VERSION = '0.7.0'
 
 /** How the CLI is started, as the person would type it. */
 export const CONPORT = ['npx', '-y', `conport@${CLI_VERSION}`]
@@ -23,39 +23,6 @@ export function shellWord(word: string): string {
 
 export function commandLine(args: readonly string[]): string {
   return args.map(shellWord).join(' ')
-}
-
-/** The command the "Run" button types into a terminal of the repository root. */
-export function runCommand(epic: number, project: string, roles: Roles): string {
-  return commandLine([
-    ...CONPORT,
-    'epic',
-    'run',
-    String(epic),
-    '--project',
-    project,
-    '--host',
-    'orca',
-    '--implementer',
-    roles.implementer,
-    '--reviewer',
-    roles.reviewer,
-    '--gap-hunter',
-    roles.gapHunter,
-    '--final-reviewer',
-    roles.finalReviewer
-  ])
-}
-
-/** The command that answers a stop-list question of an epic's run, the choice left for the person to fill. */
-export function answerCommand(epic: number, project: string, task: number | null): string {
-  const about = task === null ? [] : ['--task', String(task)]
-  return commandLine([...CONPORT, 'epic', 'answer', String(epic), ...about, '--choice', '<вариант>', '--project', project])
-}
-
-/** The command that prints an epic's run: its questions with their options among it. */
-export function statusCommand(epic: number, project: string): string {
-  return commandLine([...CONPORT, 'epic', 'status', String(epic), '--project', project])
 }
 
 /**
@@ -82,7 +49,7 @@ export interface PrepareInput {
 }
 
 /**
- * The task an agent is started with to prepare an epic for a run: a talk with the person in
+ * The task an agent is started with to prepare an epic for its start: a talk with the person in
  * the terminal that ends in a spec and a plan in ConPort, each stored only once the person
  * approved it. Every ConPort command it names carries the project and the CLI release of the
  * panel; the API key is never in it, the CLI reads that itself.
@@ -92,9 +59,9 @@ export function prepareTask({ epic, project, missing }: PrepareInput): string {
   const cli = (args: string): string => `\`${npx} ${args} -p ${project}\``
   // The generic API commands name the project by their own flag.
   const api = (args: string): string => `\`${npx} api ${args} --project ${project}\``
-  // The tasks the epic already has: a run refuses an open one without a section of the plan.
+  // The tasks the epic already has: an open one the plan has no section for is closed before the import.
   const tasks =
-    `Read the tasks the epic already has: ${api(`tasks list --parent_task_id ${epic} --status ALL --limit 200`)}. ` +
+    `Read the tasks the epic already has: ${api(`tasks list --parent_task_id ${epic} --status ALL --include_snoozed true --limit 200`)}. ` +
     'Each task that is neither DONE nor CANCELLED is open. Agree with the person which open tasks the plan keeps; ' +
     `close every other open task before the import, only with the person's consent: ${api('tasks update --task_id <id> --status CANCELLED')}.`
   const planFormat =
@@ -128,7 +95,7 @@ export function prepareTask({ epic, project, missing }: PrepareInput): string {
           ...plan('doc-<number of the spec>')
         ]
   return [
-    `Prepare epic ${epic} of the ConPort project ${project} for an epic run: ` +
+    `Prepare epic ${epic} of the ConPort project ${project} for its start: ` +
       (missing === 'spec' ? 'it has no spec yet, and needs a spec and a plan.' : 'it has a spec, and needs a plan.'),
     '',
     'Talk with the person in this terminal, in the language they write in. Store nothing in ConPort before they approve it.',
@@ -137,7 +104,306 @@ export function prepareTask({ epic, project, missing }: PrepareInput): string {
     '',
     `1. Read the epic: ${api(`tasks get --task_id ${epic}`)}`,
     ...steps.map((step, i) => `${i + 2}. ${step}`),
-    `${steps.length + 2}. Tell the person the epic is ready to run: they press refresh in the ConPort Epics panel of Orca.`
+    `${steps.length + 2}. Tell the person the epic is ready to start: they press refresh in the ConPort Epics panel of Orca.`
+  ].join('\n')
+}
+
+/** The subagent type each role of an epic starts with: the types of the conport plugin. */
+export const DEFAULT_ROLES: Roles = {
+  implementer: 'conport:sdd-implementer',
+  reviewer: 'conport:sdd-task-reviewer',
+  gapHunter: 'conport:sdd-gap-hunter',
+  finalReviewer: 'conport:sdd-final-reviewer'
+}
+
+/** The subagent type of a fix round whose implementer is gone: never chosen. */
+export const FIXER_TYPE = 'conport:sdd-fixer'
+
+/**
+ * The form of a project handle. The panel never shows one as the name of a project, and the
+ * worker keeps what is chosen for an epic under it.
+ */
+export const HANDLE_FORM = /^pr[a-hjkmnp-z2-9]{8}$/
+
+/** A subagent type is a plain name: it goes into the text of a task and into a command line. */
+export const ROLE_TYPE_FORM = /^[\w.:-]+$/
+
+/** An epic done by the SDD skill: where, from which branch, by which harness and subagent types. */
+export interface EpicTaskInput {
+  epic: number
+  /** The project handle, as `conport epic list` answered it. */
+  project: string
+  /** The working copy of the branch `epic-<N>`. */
+  worktree: string
+  /** The branch the epic was cut from and is merged into by the person. */
+  base: string
+  /** The agent kind that leads the epic: `claude` works by the skill, another by the role texts of the CLI. */
+  harness: string
+  roles: Roles
+}
+
+/** An epic done by the workflow `/conport:epic`: in the repository root, on its default branch. */
+export interface EpicWorkflowInput {
+  epic: number
+  /** The project handle, as `conport epic list` answered it. */
+  project: string
+  /** The main working tree of the repository. */
+  root: string
+  /** Its default branch: the workflow merges into it. */
+  base: string
+}
+
+/**
+ * The words of other texts the task of an epic names, each by where it stands there: the task is
+ * built from this list alone. A test of the conport CLI holds every entry against its source, so
+ * a step renumbered or a line reworded there is seen before the task points at nothing. `<M>`
+ * stands for the number of the epic.
+ */
+export const QUOTES = {
+  /** The reference of the conport skill: steps of its flow by title, one by number, a part of a step. */
+  overlay: {
+    file: 'references/superpowers-overlay.md',
+    execution: 'Execution',
+    dispatching: 'Dispatching a subagent',
+    editing: 'Editing the plan during the work',
+    finishStep: 8,
+    finish: 'on a READY verdict the epic is closed, then the release follows'
+  },
+  /** The conport skill itself: a section, a line of it, and its order to close an epic at once. */
+  skill: {
+    section: 'Epic in its own branch',
+    release: 'Release',
+    closeLine: 'ready to close — close it with a resolution now',
+    closeAnswer: 'ready to close: update_task('
+  },
+  /** The `finish` mode of the superpowers-conport skill: its verdict and the line printed with it. */
+  finish: {
+    mode: 'finish',
+    verdict: 'READY',
+    line: 'Сделай сейчас: update_task(task-<M>, DONE, '
+  },
+  /** The tail `plan pull` writes under a plan: its marker, its two headings, two of its orders. */
+  tail: {
+    marker: '<!-- conport-pull-tail -->',
+    contract: 'ConPort execution contract',
+    section: 'ConPort finish',
+    done: ['Definition of Done', 'epic task-<M> closed'],
+    handOver: 'delete the workspace, hand over to finishing-a-development-branch'
+  }
+} as const
+
+// The lines the tasks of an epic share, whichever way it is done.
+const EPIC_LEAD = 'You are the lead session of the epic. You work in this terminal, in '
+const EPIC_HEARD = '; the person reads this terminal and can talk to you here.'
+const EPIC_TALK =
+  '- Talk with the person in the language they write in. Do not ask leave to begin: you were started to do the epic.'
+const EPIC_COMMANDS =
+  '- Run every ConPort command exactly as written here, with the CLI release and the project it names. ' +
+  'Never print or pass the ConPort API key: the CLI reads it itself.'
+/** The task is an argument of the command line and is stored nowhere: its blocks outlive a compaction only if kept. */
+const keepBlocks = (blocks: string): string =>
+  '- This task was given to you once, as the argument you were started with, and is stored nowhere else. ' +
+  `When the context is compacted, keep its blocks ${blocks} word for word.`
+const PLAN_FILE = '.superpowers/plans/doc-<M>.md'
+const pullPlan = (pull: string): string =>
+  `Pull the plan: ${pull}. It writes \`${PLAN_FILE}\` and a \`.conport.json\` beside it: keep both.`
+
+/**
+ * The task the lead session of an epic is started with when the epic is done by the SDD skill:
+ * the whole order of the work on the branch `epic-<N>`, up to the entry that says it is ready to
+ * merge. Claude Code works by the skills and starts each role as the subagent type chosen for it;
+ * another harness has neither, so it gets the same order with the role texts and the journal
+ * named by their CLI commands, and the chosen types stay out of it. Every ConPort command carries
+ * the project and the CLI release of the panel; the API key is never in it.
+ */
+export function epicTask({ epic, project, worktree, base, harness, roles }: EpicTaskInput): string {
+  const typed = harness === 'claude'
+  const npx = `npx -y conport@${CLI_VERSION}`
+  const cli = (args: string): string => `\`${npx} ${args} -p ${project}\``
+  // The generic API commands name the project by their own flag.
+  const api = (args: string): string => `\`${npx} api ${args} --project ${project}\``
+  const role = (name: string): string => `\`${npx} agent ${name}\``
+  const branch = `\`epic-${epic}\``
+  const ready = `Epic task-${epic} is ready to merge`
+  const journal = (kind: string): string => cli(`journal add --task <id> --kind ${kind} --body-file <file>`)
+  const tasks = `tasks list --parent_task_id ${epic} --status ALL --include_snoozed true --limit 200`
+  const forEpic = (quote: string): string => quote.replace('<M>', String(epic))
+  // An approved task is in REVIEW: only a review entry sends it back to its implementer.
+  const sendBack = typed ? '' : `, ${journal('review --verdict changes_requested')}`
+  const { overlay, skill, finish: finishMode, tail } = QUOTES
+
+  const way = typed
+    ? [
+        'Work by the skill superpowers:subagent-driven-development, with the changes the conport skill makes to it:',
+        `its reference \`${overlay.file}\`, steps "${overlay.execution}" and "${overlay.dispatching}", and the first two ` +
+          `paragraphs of the section "${skill.section}" of the conport skill itself (the branch of the epic, a branch per task).`,
+        'A brief, a report, a review and a fix are entries of the task journal in ConPort, never files.'
+      ]
+    : [
+        `The steps below are the whole order of the work. The order of each role is printed by ${role('<implementer|reviewer|gap-hunter|final-reviewer>')}; ` +
+          'a brief, a report, a review and a fix are entries of the task journal in ConPort, never files.'
+      ]
+
+  const planTail = [
+    `- in the tail of the pulled plan, "${tail.done[0]} … ${forEpic(tail.done[1])}";`,
+    `- in the tail of the pulled plan, "${tail.handOver}".`
+  ]
+  // Closing the last task is answered with an order to close the epic, before the gap hunt has run.
+  const closeEcho =
+    `- the answer to closing the last task of the epic, when it says "${skill.closeAnswer}…)" or \`closable\`` +
+    (typed ? `, and the line "[EPIC] … ${skill.closeLine}" of the conport skill;` : ';')
+  const notCarried = typed
+    ? [
+        `- the line "${skill.release}" of the section "${skill.section}" (merge into main, push main);`,
+        `- step ${overlay.finishStep} of the overlay, "${overlay.finish}";`,
+        `- the line \`${forEpic(finishMode.line)}…)\` the \`${finishMode.mode}\` mode prints with ${finishMode.verdict};`,
+        closeEcho,
+        ...planTail
+      ]
+    : [closeEcho, ...planTail]
+
+  const roleLines = typed
+    ? [
+        'Roles — each role is the subagent type the person chose for this epic.',
+        `- Implementer: \`${roles.implementer}\`. A fix round continues the same subagent, or goes to \`${FIXER_TYPE}\` when it is gone.`,
+        `- Reviewer: \`${roles.reviewer}\`.`,
+        `- Gap hunter: \`${roles.gapHunter}\`.`,
+        `- Final reviewer: \`${roles.finalReviewer}\`.`,
+        'Start every role only as a subagent of the type named for it. Never put a subagent of another type, one without a type, ' +
+          'or a general-purpose one, on a role, and never do the work of a role yourself. A subagent never starts a subagent.',
+        'If a type is not found, stop and ask the person: the type is not installed, or its plugin is out of date. Do not go on without it.'
+      ]
+    : [
+        'Roles — each role is a subagent of yours that works by the text the CLI prints for it.',
+        `- Implementer: ${role('implementer')}. A fix round goes to the implementer again.`,
+        `- Reviewer: ${role('reviewer')}.`,
+        `- Gap hunter: ${role('gap-hunter')}.`,
+        `- Final reviewer: ${role('final-reviewer')}.`,
+        `Start every role only as a subagent of yours given the text of ${role('<role>')} as its standing procedure, ` +
+          'and the task number; never do the work of a role yourself. A subagent never starts a subagent.'
+      ]
+
+  const oneTask = typed
+    ? 'One task. Write the brief into its journal (`kind="brief"`: the full text of its plan section and the context the implementer needs). ' +
+      'Dispatch the implementer with the task number and how to read the journal, nothing else. Its report is the `report` entry. ' +
+      'Dispatch the reviewer with the task number and the two commits to compare. Its verdict is the `review` entry: ' +
+      'on `changes_requested` the implementer fixes every finding and writes a `fix` entry, then the reviewer reviews again; on `approve` go to step 7.'
+    : `One task. Write the brief into its journal: ${journal('brief')} (the full text of its plan section and the context the implementer needs). ` +
+      `Dispatch the implementer with the task number and how to read the journal, ${cli('journal get --task <id>')}, nothing else. ` +
+      `Its report is the \`report\` entry: ${journal('report')}. ` +
+      'Dispatch the reviewer with the task number and the two commits to compare. ' +
+      `Its verdict is the \`review\` entry, ${journal('review --verdict <approve|changes_requested>')}: ` +
+      `on \`changes_requested\` the implementer fixes every finding and writes a \`fix\` entry, ${journal('fix')}, ` +
+      'then the reviewer reviews again; on `approve` go to step 7.'
+  const newSection = typed
+    ? `as the overlay's step "${overlay.editing}" says: pull, add the section with the next free number, \`plan import\`, pull again.`
+    : `by the commands of the plan: pull it (${cli(`plan pull ${epic}`)}), add the section with the next free number above the line ` +
+      `\`${tail.marker}\`, import the file (${cli(`plan import ${PLAN_FILE}`)}), pull again.`
+  const finish = typed
+    ? `The section "${tail.section}" at the end of the pulled plan: run the skill superpowers-conport in \`${finishMode.mode}\` mode on the pulled plan file ` +
+      `and do what it prescribes until it says ${finishMode.verdict} — except the six things named under "Never".`
+    : `Check that every task of the epic is DONE or CANCELLED (${api(tasks)}) and that the checks of the plan are green on ${branch}. ` +
+      `The section "${tail.section}" of the pulled plan is not for you: skip it.`
+  // Without the conport plugin nothing but the CLI writes the entry: its command is spelled out.
+  const readyEntry = typed
+    ? ''
+    : `: \`${npx} api progress create --project ${project} --title "${ready}" --description "<body>" --linked_item_type task --linked_item_id ${epic}\``
+
+  const steps = [
+    `Read the epic: ${api(`tasks get --task_id ${epic}`)}, and its tasks: ${api(tasks)}. The dependencies of a task are in its \`tasks get\`.`,
+    `${pullPlan(cli(`plan pull ${epic}`))} Read the whole plan, its Global Constraints first. ` +
+      `Its last section, "${tail.section}", and the "${tail.contract}" above it are written by \`plan pull\`: they are no task of the epic.`,
+    `Read the spec: ${api(`links list --item_type task --item_id ${epic}`)} names the document of type \`spec\` linked to the epic with \`clarifies\`; ` +
+      `${cli('documents get doc-<S>')} writes it to \`.superpowers/docs/doc-<S>.md\`.`,
+    'Find where the epic stands, for it may have been started before. A task DONE or CANCELLED is finished. A task in REVIEW goes to its review. ' +
+      'A task IN_PROGRESS goes on from its journal: the latest entry says whether a report, a review or a fix is due. ' +
+      '`git worktree list` shows the working copies an earlier session left: a task whose branch `task-<id>` has a working copy goes on in that copy; ' +
+      'a branch `task-<id>` without one gets a working copy added for it; ' +
+      `never delete a branch or a working copy that holds commits not merged into ${branch}. ` +
+      `If the epic is TODO, take it: ${api(`tasks update --task_id ${epic} --status IN_PROGRESS`)}.`,
+    'Order. A task is ready when every task it depends on (`blocks`, `requires`) is DONE; among ready tasks the order is the section number of the plan. ' +
+      `Run ready tasks in parallel, each in a working copy of its own on the branch \`task-<id>\` cut from ${branch}; ` +
+      'start the next ones as soon as their dependencies close.',
+    oneTask,
+    `Merge. Merge \`task-<id>\` into ${branch} in this working copy, one task at a time, and run there the checks the plan names in its Global Constraints. ` +
+      'Red checks or a conflict go back to the implementer of that task as one fix round: the task is in REVIEW, where a `fix` entry is not accepted, ' +
+      'so the reviewer of that task first writes a `review` entry with the verdict `changes_requested` and the output of the checks or of the merge' +
+      `${sendBack}, and the fix round follows as in step 6. ` +
+      `Then close the task: ${api('tasks update --task_id <id> --status DONE --resolution "<what was done, the merge commit>"')}, and remove its working copy.`,
+    `Gap hunt, once, when every task of the epic is DONE or CANCELLED: the whole branch ${branch} against the spec, with the goal as the spec states it. ` +
+      'A Blocker becomes a task of the epic; a Should-fix and a Note are kept for step 12.',
+    'Final review, once, after the tasks of the gap hunt are merged: the whole branch against the spec. ' +
+      'A Critical or Important finding becomes a task of the epic; a Minor is kept for step 12. There is no second final review.',
+    `A finding that becomes a task is a new section of the plan, ${newSection} It then runs through steps 6 and 7 once.`,
+    finish,
+    `On READY, log a progress entry titled exactly \`${ready}\`, linked to task ${epic}${readyEntry}. ` +
+      `Its body: the head commit of ${branch}, and every finding left open — each Should-fix and Note of the gap hunt and each Minor of the final review, one line each. ` +
+      `Then tell the person the same: the branch, its head commit, the findings left, and that merging into \`${base}\`, the release and closing the epic are theirs.`
+  ]
+
+  return [
+    `Execute epic ${epic} of the ConPort project ${project} by its plan, until the branch ${branch} is ready to merge into \`${base}\`.`,
+    `${EPIC_LEAD}the working copy ${worktree} on the branch ${branch}${EPIC_HEARD}`,
+    '',
+    ...way,
+    '',
+    'Rules',
+    EPIC_TALK,
+    `${EPIC_COMMANDS} The ConPort MCP tools do the same steps as well, with project="${project}".`,
+    '- Run no checks before the first task: the checks of the repository run inside the tasks and after the merges, where the steps below name them.',
+    '- Decide an ambiguity by the spec and record the decision in the journal of the task.',
+    '- Stop and ask the person only for: an operation that cannot be undone; a merge conflict you cannot resolve without guessing; ' +
+      "a task whose review has not approved after three rounds; the epic grown by more than 30% of the plan's tasks; " +
+      'a step that cannot be done as it is written here — a task that is BLOCKED, a dependency that can never close, ' +
+      'a subagent type named under "Roles" that is not found, a refusal of the CLI or of its key, checks that stay red after a merge and its fix round.',
+    "- When you ask, say what stopped you and the one thing you need, then end your turn and wait for the person's word. " +
+      'Do not go on to another task while a question that holds the epic is open.',
+    '- Every commit message is in the Conventional Commits form and never mentions an AI, an assistant or a model, and carries no Co-Authored-By line.',
+    keepBlocks('"Rules", "Never", "Roles" and "Steps"'),
+    '',
+    `Never: push anything; merge ${branch} into \`${base}\` or any other branch; deploy; apply a migration or touch a production service; ` +
+      `close the epic; remove the working copy ${worktree}. Those are the person's.`,
+    `The texts you work by say otherwise in ${typed ? 'six' : 'three'} places. Do not carry these out:`,
+    ...notCarried,
+    'For this run the work is finished at step 12 below, with the epic open.',
+    '',
+    ...roleLines,
+    '',
+    'Steps',
+    ...steps.map((step, i) => `${i + 1}. ${step}`)
+  ].join('\n')
+}
+
+/**
+ * The task the lead session of an epic is started with when the epic is done by the workflow
+ * `/conport:epic`: pull the plan, start the workflow, tell the person how it ended. The workflow
+ * does the rest itself, so the task names no role and no check; a second run is the same command.
+ */
+export function epicWorkflowTask({ epic, project, root, base }: EpicWorkflowInput): string {
+  const pull = `\`npx -y conport@${CLI_VERSION} plan pull ${epic} -p ${project}\``
+  const steps = [
+    pullPlan(pull),
+    `Start the workflow: \`/conport:epic {"epic": ${epic}, "project": "${project}", "plan": "${PLAN_FILE}"}\`.`,
+    'When it ends, tell the person its outcome as the run printed it — `EPIC_CLOSED`, `DONE_EPIC_OPEN` or `DONE_WITH_UNRESOLVED_CRITICALS` — ' +
+      `with the tasks done, failed and skipped and the findings left, and that pushing \`${base}\` and the release are theirs.`
+  ]
+  return [
+    `Execute epic ${epic} of the ConPort project ${project} with the workflow /conport:epic.`,
+    `${EPIC_LEAD}the repository ${root} on its default branch \`${base}\`${EPIC_HEARD}`,
+    '',
+    'Rules',
+    EPIC_TALK,
+    EPIC_COMMANDS,
+    `- The workflow runs the checks, the working copies, the reviews, the merges into \`${base}\`, the gap hunt, the acceptance and the accounting in ConPort itself. ` +
+      'Do none of that by hand, before it or beside it.',
+    '- When the workflow stops with a question, an `ABORTED_…` status or a failed task, tell the person here what it said and the one thing to do, ' +
+      'then end your turn and wait for their word. When they tell you to run it again, run the same command: the workflow picks up the branches an earlier run left.',
+    keepBlocks('"Rules", "Never" and "Steps"'),
+    '',
+    'Never: push anything; deploy; apply a migration or touch a production service; merge by hand.',
+    '',
+    'Steps',
+    ...steps.map((step, i) => `${i + 1}. ${step}`)
   ].join('\n')
 }
 

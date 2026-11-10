@@ -1,4 +1,4 @@
-// Wires a worker to the fake `conport` and `orca` executables (test/fake-cli.mjs).
+// Wires a worker to the fake `conport`, `orca` and `git` executables (test/fake-cli.mjs).
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -9,7 +9,7 @@ import { createWorker } from '../src/worker'
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), 'fake-cli.mjs')
 
 export interface FakeAnswer {
-  /** The start of the joined args this answer is for, e.g. `epic status 7`. */
+  /** The start of the joined args this answer is for, e.g. `epic list --project`. */
   match: string
   code?: number
   stdout?: string
@@ -25,14 +25,18 @@ export interface Fake {
   pluginRepo: string
   /**
    * A host whose focused workspace is `focused`, listing it among other workspaces of Orca,
-   * the repository root included; `results` add to or replace its answers.
+   * the repository root included; `results` add to or replace its answers, `storage` is what
+   * the plugin has stored before.
    */
-  host(results?: Record<string, unknown>): ReturnType<typeof mockHost>
+  host(results?: Record<string, unknown>, storage?: Record<string, unknown>): ReturnType<typeof mockHost>
   /** The worker module to pass to `mountWorker`. */
   worker: { default: (orca: never) => void; deactivate: () => void }
   /** The args each call of the fake conport received, in order. */
   conportCalls(): string[][]
   orcaCalls(): string[][]
+  gitCalls(): string[][]
+  /** How the worker of this machine starts its programs, for a worker with one of them changed. */
+  deps: { conport: readonly string[]; orca: readonly string[]; git: readonly string[] }
 }
 
 /**
@@ -55,6 +59,34 @@ export function json(value: unknown): FakeAnswer['stdout'] {
   return JSON.stringify(value)
 }
 
+/** A row of `orca worktree list`: a working copy of the fake repository on `branch`, or on none. */
+export interface WorktreeRow {
+  repoId: string
+  path: string
+  branch: string | null
+  isMainWorktree: boolean
+}
+
+export function worktreeRow(path: string, branch: string | null, isMainWorktree = false): WorktreeRow {
+  return { repoId: 'repo-focus', path, branch: branch === null ? null : `refs/heads/${branch}`, isMainWorktree }
+}
+
+/** What the fake orca answers when asked for the working copies of the repository at `root`. */
+export function worktreeList(root: string, rows: WorktreeRow[], truncated = false): FakeAnswer {
+  return {
+    match: `worktree list --repo path:${root} `,
+    stdout: json({ ok: true, result: { worktrees: rows, totalCount: rows.length + (truncated ? 1 : 0), truncated } })
+  }
+}
+
+/** What the fake orca answers when asked for the terminals of the working copy at `path`. */
+export function terminalList(path: string, terminals: unknown[], truncated = false): FakeAnswer {
+  return {
+    match: `terminal list --worktree path:${path} `,
+    stdout: json({ ok: true, result: { terminals, totalCount: terminals.length + (truncated ? 1 : 0), truncated } })
+  }
+}
+
 /** Waits until `ready()` holds, checking every few milliseconds; fails after `limitMs`. */
 export async function until(ready: () => boolean, limitMs = 3_000): Promise<void> {
   const deadline = Date.now() + limitMs
@@ -72,10 +104,9 @@ export interface FakeDirs {
   focused: string
 }
 
-export function fake(
-  conport: FakeAnswer[],
-  orca?: FakeAnswer[] | ((dirs: FakeDirs) => FakeAnswer[])
-): Fake {
+type Answers = FakeAnswer[] | ((dirs: FakeDirs) => FakeAnswer[])
+
+export function fake(conport: FakeAnswer[], orca?: Answers, git?: Answers): Fake {
   const dir = mkdtempSync(join(tmpdir(), 'conport-orca-'))
   const root = join(dir, 'repo')
   const focused = join(root, '.wt', 'feature')
@@ -93,24 +124,26 @@ export function fake(
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line) as string[])
-  const { activate, deactivate } = createWorker({
+  const answersOf = (answers: Answers | undefined): FakeAnswer[] =>
+    typeof answers === 'function' ? answers({ dir, root, focused }) : (answers ?? [])
+  const deps = {
     conport: [process.execPath, FAKE_CLI, scenario('conport', conport)],
     orca: [
       process.execPath,
       FAKE_CLI,
-      scenario('orca', [
-        ...(typeof orca === 'function' ? orca({ dir, root, focused }) : (orca ?? [])),
-        ...orcaRepo(root, focused, pluginRepo)
-      ])
-    ]
-  })
+      scenario('orca', [...answersOf(orca), ...orcaRepo(root, focused, pluginRepo)])
+    ],
+    git: [process.execPath, FAKE_CLI, scenario('git', answersOf(git))]
+  }
+  const { activate, deactivate } = createWorker(deps)
   const workspaces = [
     { id: 'ws-elsewhere', kind: 'worktree', name: 'feature', path: join(dir, 'other', 'feature'), branch: 'hotfix', hostId: null },
     { id: 'ws-focus', kind: 'worktree', name: 'feature', path: focused, branch: 'feature', hostId: null },
     { id: 'ws-root', kind: 'worktree', name: 'repo', path: root, branch: 'main', hostId: null }
   ]
-  const host = (results: Record<string, unknown> = {}) =>
+  const host = (results: Record<string, unknown> = {}, storage: Record<string, unknown> = {}) =>
     mockHost({
+      storage,
       results: {
         'workspace.readContext': { branch: 'feature', displayName: 'feature', terminals: [] },
         'workspace.list': { workspaces, truncated: false },
@@ -125,6 +158,8 @@ export function fake(
     host,
     worker: { default: activate, deactivate },
     conportCalls: () => calls('conport'),
-    orcaCalls: () => calls('orca')
+    orcaCalls: () => calls('orca'),
+    gitCalls: () => calls('git'),
+    deps
   }
 }

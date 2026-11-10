@@ -1,8 +1,6 @@
 // What the panel says. Shared by the worker and the panel: no Node imports.
-import type { EpicSummary, HandMode, Milestone, OutsideTask, RunPhase } from './protocol'
-
-/** The phases while the agents of an epic are at work. */
-export const ACTIVE_PHASES: readonly RunPhase[] = ['preparing', 'running', 'finishing']
+import { FIXER_TYPE } from './cli'
+import type { EpicSummary, EpicTask, EpicTaskStatus, HandMode, Milestone, OutsideTask, Roles, Way } from './protocol'
 
 /** The Russian word for `n` things: `one` for 1, 21…; `few` for 2–4, 22…; `many` for the rest. */
 export function plural(n: number, one: string, few: string, many: string): string {
@@ -86,45 +84,116 @@ export function handNotice(task: number, mode: HandMode, project: string): strin
         'агент запишет вердикт в журнал задачи и при одобрении с вашего согласия закроет её.'
 }
 
-/** Where the agents of an epic were started, and where a refusal at the start shows. */
-export const startNotice = (epic: number, project: string): string =>
-  `Агенты начинают работу в терминале «conport epic ${epic}» репозитория «${project}»; если запуск откажет, причина будет там. ` +
-  'Нажмите «Обновить», чтобы увидеть, что агенты работают.'
+/** Where the agent of an epic is: said once it is started, and on the screen of an epic whose session is alive. */
+export const startNotice = (epic: number, way: Way): string =>
+  way === 'sdd'
+    ? `Агент эпика ${epic} открыт в терминале рабочей копии epic-${epic}; вопросы он задаёт там же`
+    : `Агент эпика ${epic} открыт в терминале корня репозитория; вопросы он задаёт там же`
 
 /** Why a project of Orca that is a plain folder cannot run an epic. */
 export const FOLDER_NOTE = 'Папка без git — запускать нечего'
 
-/** The six cases of the stop list. */
-export const CASES: Record<number, string> = {
-  1: 'Нужна необратимая операция',
-  2: 'Исправления не сошлись',
-  3: 'Конфликт без догадки',
-  4: 'Эпик вырос больше чем на 30%',
-  5: 'Агент дважды ушёл',
-  6: 'Агент ждёт человека'
+/** The four roles of an epic, each a subagent type of its harness. */
+export const ROLE_TITLES: Record<keyof Roles, string> = {
+  implementer: 'Исполнитель',
+  reviewer: 'Ревьюер',
+  gapHunter: 'Поиск пробелов',
+  finalReviewer: 'Итоговое ревью'
 }
 
-export const ROLE_TITLES = {
-  implementer: 'Исполнитель',
-  reviewer: 'Проверяющий',
-  gapHunter: 'Поиск пробелов',
-  finalReviewer: 'Итоговая проверка'
+/** The two ways an epic is done. */
+export const WAY_LABELS: Record<Way, string> = { sdd: 'Навык SDD', workflow: '/conport:epic' }
+
+/** Under the switch, by the workflow: what it does on its own. */
+export const WORKFLOW_NOTE =
+  'Поток работает в корне репозитория на основной ветке: начинает со своих проверок, вливает задачи в основную ветку и закрывает эпик сам'
+
+/** Under the roles: who fixes what a review found is not chosen. */
+export const FIXER_NOTE = `Правки — тот же исполнитель, иначе ${FIXER_TYPE}`
+
+/** Why the role lists are off by the workflow. */
+export const ROLES_FIXED_NOTE = 'Типы субагентов зашиты в потоке'
+
+/** Why the role lists are off for a harness whose subagents have no types. */
+export const ROLES_UNTYPED_NOTE = 'У этого харнесса нет субагентов с типами: роли идут по текстам conport agent <роль>'
+
+/** Why the role lists are off when the subagent types cannot be read: `what` is the refusal, said in Russian. */
+export const rolesUnavailableNote = (what: string): string => `Список субагентов недоступен: ${what}; роли пойдут исходными типами`
+
+/** Beside a role whose type the list of the harness lacks. */
+export const TYPE_MISSING_NOTE = 'тип не найден: установите или обновите плагин conport'
+
+/** Under «Запустить» by the SDD skill, when the working copy of the epic is there and no agent is in it. */
+export const COPY_NOTE = 'рабочая копия уже есть, агент продолжит с того места, где работа встала'
+
+/** Under «Запустить» by the workflow, when branches of an earlier start of it are there. */
+export const BRANCHES_NOTE = 'поток подхватит ветки прежнего запуска'
+
+/** Under a «Запустить» that waits: the epic was started and its agent is not yet seen in the terminal. */
+export const STARTED_NOTE = 'Агент открывается в терминале: нажмите «Обновить», чтобы увидеть его сессию'
+
+/** Why the role lists are off for a harness that is not found: its subagent types are not asked for. */
+export const ROLES_NO_HARNESS_NOTE = 'Харнесс не найден: типы его субагентов не читаются'
+
+/** What a second start does while the session of the epic is alive: asked before it. */
+export const RESTART_NOTE = 'Сессия эпика жива. Новый запуск откроет ещё одного агента с тем же заданием, прежний терминал останется открыт.'
+
+/** The refusal `way_needs_claude`, said beside a start that cannot be pressed. */
+export const WAY_NEEDS_CLAUDE = {
+  what: 'Способ «/conport:epic» есть только у Claude Code с плагином conport',
+  action: 'выберите харнесс Claude Code'
 } as const
 
-/**
- * Under the team of an epic: whose rights the agents use, where their state is, and that an agent
- * asking leave for every command stops the work until it is answered.
- */
-export const TEAM_NOTE =
-  'Агенты работают с правами из настроек Orca и самих агентов, в ветке эпика; в основную ветку вливаете вы. ' +
-  'Состояние агентов и их вопросы — в Orca. ' +
-  'Агент, который спрашивает разрешение на каждую команду, будет останавливать работу над эпиком, пока вы ему не ответите.'
+/** A status of a task of an epic, as its row says it. */
+export const TASK_STATUS: Record<EpicTaskStatus, string> = {
+  TODO: 'к выполнению',
+  IN_PROGRESS: 'в работе',
+  REVIEW: 'на проверке',
+  BLOCKED: 'остановлена',
+  PARKED: 'отложена',
+  DONE: 'закрыта',
+  CANCELLED: 'отменена'
+}
 
-/** Where the agents of an epic at work are watched and answered. */
-export const AT_WORK_NOTE = 'Состояние и вопросы агентов — в Orca: в списке проектов и на панели агентов. Там же отвечайте на вопросы.'
+/** The tasks of an epic by status; a cancelled one is in no count, nor in the total. */
+export interface TaskCounts {
+  todo: number
+  inProgress: number
+  review: number
+  blocked: number
+  parked: number
+  done: number
+  total: number
+}
 
-/** What stopping the agents keeps. */
-export const STOP_NOTE = 'Сделанное останется в ветке эпика; «Продолжить» запустит агентов снова с того же места'
+export function taskCounts(tasks: EpicTask[]): TaskCounts {
+  const of = (status: EpicTaskStatus): number => tasks.filter((task) => task.status === status).length
+  const counts = {
+    todo: of('TODO'),
+    inProgress: of('IN_PROGRESS'),
+    review: of('REVIEW'),
+    blocked: of('BLOCKED'),
+    parked: of('PARKED'),
+    done: of('DONE')
+  }
+  return { ...counts, total: Object.values(counts).reduce((sum, n) => sum + n, 0) }
+}
+
+/** The counts of an epic in one line; the parked ones only when there are some. */
+export function taskCountsLine(counts: TaskCounts): string {
+  const shown: Array<[EpicTaskStatus, number]> = [
+    ['TODO', counts.todo],
+    ['IN_PROGRESS', counts.inProgress],
+    ['REVIEW', counts.review],
+    ['BLOCKED', counts.blocked],
+    ['PARKED', counts.parked],
+    ['DONE', counts.done]
+  ]
+  return shown
+    .filter(([status, n]) => status !== 'PARKED' || n > 0)
+    .map(([status, n]) => `${TASK_STATUS[status]} ${n}`)
+    .join(' · ')
+}
 
 /** The priority of a task, 1 to 5, in words. */
 export const PRIORITY: Record<number, string> = {
@@ -171,93 +240,41 @@ export const SHEET_STEPS = {
   ]
 } as const
 
-/** The one action ending a failure text: after held agents, they are continued; after a refused action, it is repeated. */
-const AGAIN = 'и нажмите «Продолжить»'
-const REPEAT = 'и повторите'
-
 /** What a failure means and the one thing to do, in Russian. */
 export interface FailureText {
   what: string
   action: string
 }
 
-const ORCA_AWAY: FailureText = { what: 'Orca не ответила', action: `проверьте, что Orca запущена, {again}` }
+const ORCA_AWAY: FailureText = { what: 'Orca не ответила', action: 'проверьте, что Orca запущена, и повторите' }
 
 /**
- * The refusals of the conport and orca CLIs by code: the failures `conport epic run` keeps in its
- * record and those of the panel's actions. The CLIs word them in English for a terminal: the
- * panel says them by their code.
+ * The refusals of the conport and orca CLIs by code, for the commands the plugin runs. The CLIs
+ * word them in English for a terminal, and orca names no action: the panel says them by their code.
  */
 const FAILURES: Record<string, FailureText> = {
-  gate_red: {
-    what: 'гейт красный на голове ветки эпика ещё до запуска',
-    action: `сделайте гейт зелёным на ветке эпика {again}`
-  },
-  epic_worktree_dirty: {
-    what: 'в рабочей копии эпика есть незафиксированные изменения или незавершённое слияние',
-    action: `зафиксируйте или уберите их в рабочей копии эпика {again}`
-  },
-  epic_held: {
-    what: 'эпик ведут другие агенты или другой человек',
-    action: 'дождитесь, пока они закончат, или договоритесь с тем, кто ведёт эпик'
-  },
-  run_mismatch: {
-    what: 'агенты эпика запущены для другого проекта, другой версией CLI или в другой команде',
-    action: 'продолжите их тем же проектом, версией и командой или остановите и запустите заново'
-  },
-  no_spec: { what: 'у эпика нет спецификации', action: `добавьте спецификацию эпика в ConPort {again}` },
-  no_plan: { what: 'у эпика нет плана', action: `добавьте план эпика в ConPort {again}` },
-  several_specs: { what: 'у эпика несколько спецификаций', action: `оставьте у эпика одну спецификацию {again}` },
-  several_plans: { what: 'у эпика несколько планов', action: `оставьте у эпика один план {again}` },
-  plan_unparsable: { what: 'план эпика не читается', action: `исправьте разметку плана в ConPort {again}` },
-  section_without_task: {
-    what: 'в плане есть разделы без задачи эпика',
-    action: `заведите задачу эпика на каждый раздел плана {again}`
-  },
-  task_without_section: {
-    what: 'у эпика есть открытые задачи без раздела плана',
-    action: `добавьте их в план или закройте {again}`
-  },
-  no_gate_object: { what: 'в плане нет описания гейта', action: `добавьте в план объект гейта {again}` },
-  gate_dir_outside: {
-    what: 'гейт плана запускает команды вне рабочей копии',
-    action: `укажите в гейте плана папку внутри репозитория {again}`
-  },
-  dependency_cycle: {
-    what: 'задачи эпика зависят друг от друга по кругу',
-    action: `разорвите круг зависимостей задач {again}`
-  },
-  not_an_epic: { what: 'выбранная задача не эпик', action: 'выберите в панели эпик' },
-  no_project: { what: 'проект ConPort не назван', action: `привяжите проект в панели {again}` },
+  no_project: { what: 'проект ConPort не назван', action: 'привяжите проект в панели и повторите' },
   project_not_found: {
     what: 'проект ConPort не найден',
-    action: `проверьте привязку проекта в панели или CONPORT_PROJECT_NAME {again}`
+    action: 'проверьте привязку проекта в панели или CONPORT_PROJECT_NAME и повторите'
   },
-  no_api_key: { what: 'нет ключа API ConPort', action: `впишите CONPORT_API_KEY в ~/.config/conport/.env {again}` },
-  conport_unreachable: { what: 'ConPort не ответил', action: `проверьте сеть {again}` },
-  host_unavailable: ORCA_AWAY,
+  no_api_key: { what: 'нет ключа API ConPort', action: 'впишите CONPORT_API_KEY в ~/.config/conport/.env и повторите' },
+  conport_unreachable: { what: 'ConPort не ответил', action: 'проверьте сеть и повторите' },
+  invalid_argument: { what: 'CLI не принял команду плагина', action: 'обновите плагин и повторите' },
+  subagents_unavailable: {
+    what: 'команда claude plugin list не ответила',
+    action: 'установите Claude Code или сделайте claude видимым в PATH приложения Orca и повторите'
+  },
+  command_removed: { what: 'плагин вызвал команду, которой в CLI больше нет', action: 'обновите плагин' },
   runtime_unavailable: ORCA_AWAY,
   runtime_timeout: ORCA_AWAY,
-  worktree_list_truncated: {
-    what: 'Orca отдала неполный список рабочих мест',
-    action: `уберите лишние рабочие места из Orca {again}`
-  },
-  unexpected_answer: { what: 'Orca ответила не так, как ждёт CLI', action: `обновите Orca {again}` },
-  record_busy: { what: 'запись агентов эпика занята другой командой', action: 'подождите минуту и нажмите «Продолжить»' },
-  invalid_argument: { what: 'CLI не принял команду запуска', action: `обновите плагин {again}` },
-  no_cli_version: { what: 'CLI не знает своей версии', action: `обновите плагин {again}` },
-  // Refusals of the actions on the agents of an epic: reading their state and Stop.
-  no_run: { what: 'агенты над эпиком не запускались', action: 'нажмите «Запустить»' },
-  workers_not_stopped: {
-    what: 'агенты эпика остановлены не все',
-    action: 'остановите оставшихся агентов эпика в Orca'
-  }
+  unexpected_answer: { what: 'Orca ответила не так, как ждёт плагин', action: 'обновите Orca и повторите' },
+  terminal_not_found: { what: 'Orca не нашла терминал', action: 'нажмите «Обновить»' }
 }
 
-/** The text of a known code with its "{again}" said as `again`; undefined for a code not known. */
-function known(code: string, again: string): FailureText | undefined {
-  const text = FAILURES[code] ?? httpText(code)
-  return text ? { what: text.what, action: text.action.replace('{again}', again) } : undefined
+/** The text of a known code; undefined for a code not known. */
+function known(code: string): FailureText | undefined {
+  return FAILURES[code] ?? httpText(code)
 }
 
 /** A status of ConPort the panel can act on: the key refused, or ConPort failing. */
@@ -265,45 +282,15 @@ function httpText(code: string): FailureText | undefined {
   const http = /^http_(\d{3})$/.exec(code)
   const status = http ? Number(http[1]) : 0
   if (status === 401 || status === 403) {
-    return { what: 'ConPort не принял ключ API', action: 'проверьте CONPORT_API_KEY в ~/.config/conport/.env {again}' }
+    return { what: 'ConPort не принял ключ API', action: 'проверьте CONPORT_API_KEY в ~/.config/conport/.env и повторите' }
   }
-  if (status >= 500) return { what: 'ConPort ответил ошибкой', action: 'подождите несколько минут {again}' }
+  if (status >= 500) return { what: 'ConPort ответил ошибкой', action: 'подождите несколько минут и повторите' }
   return undefined
 }
 
-/** A failure the panel does not know: the terminal of the agents printed it whole. */
-function unknownFailure(epic: number): FailureText {
-  return {
-    what: 'агенты остановились по причине, которой панель не знает',
-    action: `посмотрите вывод в терминале «conport epic ${epic}» корня репозитория ${AGAIN}`
-  }
-}
-
-/** The title of the box that says the epic waits for the person: a question Orca did not take. */
-export const UNASKED_TITLE = 'Эпик ждёт вашего ответа'
-
-/**
- * A question Orca did not take, said as what the epic waits for: the task it is about and the one
- * action, to answer it by the command shown under it — and, while the agents are not at work, to
- * continue them, as only working agents take the answer. The question itself is not shown: the
- * command named by `hint` prints it with its options.
- */
-export function unaskedText(task: number | null, atWork: boolean): FailureText & { hint: string } {
-  return {
-    what: `Orca не приняла вопрос по ${task === null ? 'эпику' : `задаче ${task}`}, и в Orca его нет.`,
-    action: `ответьте на него в терминале репозитория командой ниже${atWork ? '' : ', затем нажмите «Продолжить»'}`,
-    hint: 'Вопрос и варианты ответа печатает команда'
-  }
-}
-
-/** The title of the box that says why the agents of an epic stopped. */
-export const FAILURE_TITLE = 'Агенты остановились'
-export const FAILURE_ACTION = 'Что сделать: '
-
-/** Why the agents of an epic stopped and what to do, by the code of the failure; never the English of the CLI. */
-export function failureText(code: string, epic: number): FailureText {
-  return known(code, AGAIN) ?? unknownFailure(epic)
-}
+/** A refusal the panel does not know: what it says of it, and the one thing to do. */
+const UNKNOWN_REFUSAL = 'программа отказала по причине, которой панель не знает'
+const UNKNOWN_ACTION = 'нажмите «Обновить»; если отказ повторится, обновите плагин и Orca'
 
 /**
  * The refusals the worker words itself, in Russian: shown as they are. Every other refusal comes
@@ -311,6 +298,10 @@ export function failureText(code: string, epic: number): FailureText {
  */
 const OWN_REFUSALS = new Set([
   'workspaces_truncated',
+  'terminals_truncated',
+  'project_not_handle',
+  'session_gone',
+  'harness_invalid',
   'workspace_ambiguous',
   'no_workspace',
   'no_repository',
@@ -323,6 +314,14 @@ const OWN_REFUSALS = new Set([
   'task_moved',
   'agent_not_found',
   'agent_cannot_prepare',
+  'epic_not_ready',
+  'way_needs_claude',
+  'role_invalid',
+  'root_detached',
+  'epic_started_sdd',
+  'epic_started_workflow',
+  'epic_branch_taken',
+  'git_failed',
   'bad_output',
   'worker'
 ])
@@ -335,51 +334,12 @@ export function refusalText(refusal: { code: string; message: string; action: st
     const program = /^([^:\s]+):/.exec(refusal.message)?.[1]
     return { what: program ? `не удалось запустить ${program}` : 'не удалось запустить программу', action: refusal.action }
   }
-  return (
-    known(refusal.code, REPEAT) ?? {
-      what: 'программа отказала по причине, которой панель не знает',
-      action: 'нажмите «Обновить»; если отказ повторится, обновите плагин и Orca'
-    }
-  )
-}
-
-/** The numbers of a CLI list of task references, without their `task-` prefix. */
-const numbersOf = (text: string): string => text.replace(/task-/g, '')
-
-/**
- * What holds an epic, as the CLI words each reason in English, and the Russian the panel says
- * instead. The first pattern that matches wins.
- */
-const HOLD_REASONS: Array<[RegExp, (m: RegExpExecArray) => string]> = [
-  [/^task-(\d+) is (\S+) outside this run$/, (m) => `задача ${m[1]} в статусе ${m[2]} вне работы этих агентов`],
-  [/^task-(\d+) is (\S+)$/, (m) => `задача ${m[1]} в статусе ${m[2]}`],
-  [/^task-(\d+): the person is asked \(stop-list case (\d+)/, (m) => `задача ${m[1]}: вопрос к человеку, ${caseName(m[2])}`],
-  [/^the epic: the person is asked \(stop-list case (\d+)/, (m) => `эпик: вопрос к человеку, ${caseName(m[1])}`],
-  [/^task-(\d+) waits for the epic's question$/, (m) => `задача ${m[1]} ждёт ответа на вопрос эпика`],
-  [/^task-(\d+) waits for (.+)$/, (m) => `задача ${m[1]} ждёт задач ${numbersOf(m[2] ?? '')}`],
-  [/^the gate is red on the head of /, () => 'гейт красный на голове ветки эпика'],
-  [/^the gate is red on \S+ with (\S+) merged in/, (m) => `гейт красный на ветке эпика после слияния ${m[1]}`],
-  [
-    /^plan section (\S+) «(.*)» has no closed task: task-(\d+) left the epic$/,
-    (m) => `у раздела плана ${m[1]} «${m[2]}» нет закрытой задачи: задача ${m[3]} ушла из эпика`
-  ],
-  [/^merging (\S+) into \S+ conflicts in (.+)$/, (m) => `слияние ${m[1]} в ветку эпика даёт конфликт в ${m[2]}`],
-  [/^the trial merge of (\S+) could not run/, (m) => `пробное слияние ${m[1]} в ветку эпика не запустилось`],
-  [/^no run of epic \S+ is going/, () => 'агенты эпика не работают: нажмите «Продолжить»']
-]
-
-function caseName(no: string | undefined): string {
-  const name = CASES[Number(no)]
-  return name ? `случай стоп-листа «${name}»` : `случай стоп-листа ${no}`
-}
-
-/** One reason that holds an epic, in Russian; one the panel does not know is not shown as is. */
-export function holdReason(reason: string, epic: number): string {
-  for (const [pattern, say] of HOLD_REASONS) {
-    const m = pattern.exec(reason)
-    if (m) return say(m)
-  }
-  return `причина, которой панель не знает: посмотрите вывод в терминале «conport epic ${epic}» корня репозитория`
+  const text = known(refusal.code)
+  if (text) return text
+  // Orca refuses with its own words and names no action: its words are shown as they are. A line
+  // of an error stream that is no refusal (`cli_failed`) comes without an action too, and is not.
+  const ofOrca = refusal.action === '' && refusal.code !== 'cli_failed' && refusal.message.trim() !== ''
+  return { what: ofOrca ? refusal.message : UNKNOWN_REFUSAL, action: UNKNOWN_ACTION }
 }
 
 /**
@@ -387,3 +347,6 @@ export function holdReason(reason: string, epic: number): string {
  * agents of the focused workspace: once Orca runs it there, the worker sees it through the host.
  */
 export const AGENT_MISSING_ACTION = 'запустите агента в этом рабочем месте Orca и нажмите «Обновить»'
+
+/** The same for the harness of an epic. */
+export const HARNESS_MISSING_ACTION = 'запустите его в этом рабочем месте Orca и нажмите «Обновить»'

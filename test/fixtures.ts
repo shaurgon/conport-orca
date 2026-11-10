@@ -1,6 +1,7 @@
 // Answers of `conport epic ... --json` and `conport task list --json` in the shape the CLI prints
-// them (an epic's run with the fields the panel reads), for the tests and the check scenarios.
-import type { AgentKind, EpicList, EpicStatus, Milestone, Refusal, TaskList } from '../src/protocol'
+// them, and answers of the worker about an epic, for the tests and the check scenarios.
+import { DEFAULT_ROLES } from '../src/cli'
+import type { AgentKind, EpicList, EpicSession, EpicTask, Milestone, Refusal, SubagentList, TaskList } from '../src/protocol'
 
 export const HANDLE = 'prk7m2qx9d'
 
@@ -25,7 +26,6 @@ export const EPIC_LIST: EpicList = {
       milestone: RELEASE,
       runnable: true,
       reason: null,
-      run: { phase: 'running' },
       ready: false
     },
     {
@@ -36,7 +36,6 @@ export const EPIC_LIST: EpicList = {
       milestone: RELEASE,
       runnable: false,
       reason: 'no plan',
-      run: null,
       ready: false
     },
     {
@@ -47,7 +46,6 @@ export const EPIC_LIST: EpicList = {
       milestone: null,
       runnable: false,
       reason: 'no spec',
-      run: null,
       ready: false
     },
     {
@@ -58,7 +56,6 @@ export const EPIC_LIST: EpicList = {
       milestone: null,
       runnable: true,
       reason: null,
-      run: null,
       ready: false
     }
   ]
@@ -91,37 +88,8 @@ export const AGENTS: { agents: AgentKind[] } = {
   ]
 }
 
-export const RUNNING: EpicStatus = {
-  epic: 7,
-  phase: 'running',
-  questions: [],
-  outcome: null,
-  failure: null
-}
-
-/** The run of an epic that never ran. */
-export const idle = (epic: number): EpicStatus => ({
-  epic,
-  phase: 'none',
-  questions: [],
-  outcome: null,
-  failure: null
-})
-
-/** A run that broke off on what waiting cannot cure: the record keeps why. */
-export const FAILED: EpicStatus = {
-  ...RUNNING,
-  phase: 'held',
-  // As `conport epic status` words it, with the epic's task reference.
-  outcome: { kind: 'held', reasons: [`no run of epic task-${RUNNING.epic} is going: start it again with conport epic run ${RUNNING.epic}`] },
-  failure: {
-    code: 'gate_red',
-    message: 'the gate is red on the head of the epic branch before the start',
-    action: 'make the gate green on the epic branch, then start the run again'
-  }
-}
-
-export const STOPPED: EpicStatus = { ...RUNNING, phase: 'stopped', outcome: { kind: 'stopped' } }
+/** A third harness, found on the machine. */
+export const CURSOR: AgentKind = { id: 'cursor', label: 'Cursor', command: 'cursor-agent', found: true }
 
 /** As the CLI words it, in English. */
 export const NO_KEY: Refusal = {
@@ -129,3 +97,53 @@ export const NO_KEY: Refusal = {
   message: 'CONPORT_API_KEY is not set',
   action: 'put CONPORT_API_KEY=<key> in ~/.config/conport/.env'
 }
+
+/** The tasks of an epic in the order ConPort lists them, one in each of the seven statuses. */
+export const EPIC_TASKS: EpicTask[] = [
+  { id: 30, title: 'Drop the old index', status: 'CANCELLED' },
+  { id: 36, title: 'Measure the search', status: 'PARKED' },
+  { id: 31, title: 'Store the embeddings', status: 'DONE' },
+  { id: 35, title: 'Rank the answers', status: 'TODO' },
+  { id: 32, title: 'Build the index', status: 'REVIEW' },
+  { id: 34, title: 'Read the queries', status: 'BLOCKED' },
+  { id: 33, title: 'Search by a phrase', status: 'IN_PROGRESS' }
+]
+
+/** `conport epic subagents --harness claude --json`: the types of the conport plugin and one of each other source. */
+export const SUBAGENTS: SubagentList = {
+  harness: 'claude',
+  typed: true,
+  subagents: [
+    { type: 'conport:sdd-implementer', source: 'plugin', plugin: 'conport', description: 'Implements one task of a plan' },
+    { type: 'conport:sdd-task-reviewer', source: 'plugin', plugin: 'conport', description: 'Reviews one task' },
+    { type: 'conport:sdd-gap-hunter', source: 'plugin', plugin: 'conport', description: 'Looks for what the plan missed' },
+    { type: 'conport:sdd-final-reviewer', source: 'plugin', plugin: 'conport', description: 'Reviews the whole branch' },
+    { type: 'conport:sdd-fixer', source: 'plugin', plugin: 'conport', description: 'Fixes what a review found' },
+    { type: 'sdd-task-reviewer', source: 'user', plugin: null, description: 'Reviews one task' },
+    { type: 'gap-hunter', source: 'project', plugin: null, description: 'Looks for what the plan missed' }
+  ]
+}
+
+/** What a harness without typed subagents answers. */
+export const untyped = (harness: string): SubagentList => ({ harness, typed: false, subagents: [] })
+
+/** `epic.session` of an epic never started: the defaults, no working copy, no session. */
+export const session = (extra: Partial<EpicSession> = {}): EpicSession => ({
+  way: 'sdd',
+  harness: 'claude',
+  roles: DEFAULT_ROLES,
+  worktree: null,
+  alive: false,
+  terminal: null,
+  workflowBranches: false,
+  ...extra
+})
+
+/** The working copy of epic 7 is there and no agent is in it. */
+export const SESSION_COPY: EpicSession = session({ worktree: '/work/shop/.claude/worktrees/shop/epic-7' })
+
+/** An agent works in the working copy of epic 7. */
+export const SESSION_ALIVE: EpicSession = { ...SESSION_COPY, alive: true, terminal: 'term-epic-7' }
+
+/** The workflow was chosen for the epic, and branches of an earlier start of it are there. */
+export const SESSION_WORKFLOW: EpicSession = session({ way: 'workflow', workflowBranches: true })
