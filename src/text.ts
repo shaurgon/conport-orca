@@ -34,13 +34,13 @@ export interface EpicState {
 }
 
 /**
- * Where an epic stands by its tasks in ConPort: every task closed — ready to merge; in progress
+ * Where an epic stands in ConPort: ready to merge by the readiness entry of the core; in progress
  * once the epic is taken or a task is closed; else not started.
  */
 export function epicState(epic: EpicSummary): EpicState {
   const { open, total } = epic.progress
   const closed = total - open
-  if (total > 0 && open === 0) return { line: `Готов к вливанию · ${total} из ${total} закрыто`, share: null, closed, total }
+  if (epic.ready) return { line: `Готов к вливанию · ${closed} из ${total} закрыто`, share: null, closed, total }
   if (epic.status === 'IN_PROGRESS' || closed > 0) {
     const share = total > 0 ? Math.round((closed / total) * 100) : 0
     return { line: `В работе · ${closed} из ${total} закрыто`, share, closed, total }
@@ -72,11 +72,18 @@ export const prepareNotice = (epic: number, project: string): string =>
 
 /** Where a task handed to an agent went, and what comes of it. */
 export function handNotice(task: number, mode: HandMode, project: string): string {
+  if (mode === 'fix') {
+    return (
+      `Исправления задачи ${task} открыты в терминале «conport fix ${task}» репозитория «${project}»: агент ждёт вас там. ` +
+      'Когда он запишет исправления в журнал, задача снова будет ждать проверки — нажмите «Обновить».'
+    )
+  }
   return mode === 'do'
     ? `Задача ${task} открыта в терминале «conport task ${task}» репозитория «${project}»: агент ждёт вас там. ` +
-        'Когда он запишет отчёт, задача будет ждать проверки — нажмите «Обновить».'
+        'Работа ляжет в отдельную ветку задачи, вливаете её вы. ' +
+        'Когда агент запишет отчёт, задача будет ждать проверки — нажмите «Обновить».'
     : `Проверка задачи ${task} открыта в терминале «conport review ${task}» репозитория «${project}»: ` +
-        'агент запишет вердикт в журнал задачи.'
+        'агент запишет вердикт в журнал задачи и при одобрении с вашего согласия закроет её.'
 }
 
 /** Where the agents of an epic were started, and where a refusal at the start shows. */
@@ -104,10 +111,14 @@ export const ROLE_TITLES = {
   finalReviewer: 'Итоговая проверка'
 } as const
 
-/** Under the team of an epic: whose rights the agents use and where their state is. */
+/**
+ * Under the team of an epic: whose rights the agents use, where their state is, and that an agent
+ * asking leave for every command stops the work until it is answered.
+ */
 export const TEAM_NOTE =
   'Агенты работают с правами из настроек Orca и самих агентов, в ветке эпика; в основную ветку вливаете вы. ' +
-  'Их состояние и вопросы — в Orca.'
+  'Состояние агентов и их вопросы — в Orca. ' +
+  'Агент, который спрашивает разрешение на каждую команду, будет останавливать работу над эпиком, пока вы ему не ответите.'
 
 /** Where the agents of an epic at work are watched and answered. */
 export const AT_WORK_NOTE = 'Состояние и вопросы агентов — в Orca: в списке проектов и на панели агентов. Там же отвечайте на вопросы.'
@@ -127,7 +138,7 @@ export const PRIORITY: Record<number, string> = {
 /** A task outside the epics on its row: its priority while it waits, else its stage. */
 export function taskState(task: OutsideTask): string {
   if (task.status === 'REVIEW') return 'На проверке'
-  if (task.status === 'IN_PROGRESS') return 'В работе'
+  if (task.status === 'IN_PROGRESS') return task.changes_requested ? 'Ждёт исправлений после проверки' : 'В работе'
   return `${PRIORITY[task.priority] ?? 'Без приоритета'} · не начата`
 }
 
@@ -145,13 +156,18 @@ export const SHEET_STEPS = {
   ],
   do: [
     'Берёт задачу в работу',
-    'Делает её в этом репозитории и проверяет',
-    'Пишет отчёт в журнал задачи — задача уходит на проверку'
+    'Делает её в своей ветке, в отдельной рабочей копии рядом с репозиторием, проверяет и фиксирует коммитами',
+    'Пишет в журнал задачи отчёт с веткой и коммитом — задача уходит на проверку'
   ],
   review: [
     'Читает журнал задачи: бриф, отчёт, исправления',
-    'Проверяет работу в репозитории',
-    'Записывает в журнал задачи проверку с вердиктом'
+    'Проверяет ветку из отчёта',
+    'Записывает в журнал задачи проверку с вердиктом; при одобрении с вашего согласия закрывает задачу'
+  ],
+  fix: [
+    'Читает журнал задачи и последнюю проверку с замечаниями',
+    'Продолжает в ветке задачи, исправляет и фиксирует коммитами',
+    'Пишет исправления в журнал задачи — задача снова уходит на проверку'
   ]
 } as const
 
@@ -260,6 +276,23 @@ function unknownFailure(epic: number): FailureText {
   return {
     what: 'агенты остановились по причине, которой панель не знает',
     action: `посмотрите вывод в терминале «conport epic ${epic}» корня репозитория ${AGAIN}`
+  }
+}
+
+/** The title of the box that says the epic waits for the person: a question Orca did not take. */
+export const UNASKED_TITLE = 'Эпик ждёт вашего ответа'
+
+/**
+ * A question Orca did not take, said as what the epic waits for: the task it is about and the one
+ * action, to answer it by the command shown under it — and, while the agents are not at work, to
+ * continue them, as only working agents take the answer. The question itself is not shown: the
+ * command named by `hint` prints it with its options.
+ */
+export function unaskedText(task: number | null, atWork: boolean): FailureText & { hint: string } {
+  return {
+    what: `Orca не приняла вопрос по ${task === null ? 'эпику' : `задаче ${task}`}, и в Orca его нет.`,
+    action: `ответьте на него в терминале репозитория командой ниже${atWork ? '' : ', затем нажмите «Продолжить»'}`,
+    hint: 'Вопрос и варианты ответа печатает команда'
   }
 }
 

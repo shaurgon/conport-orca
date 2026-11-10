@@ -9,7 +9,7 @@ import { assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
 import { AGENTS, EPIC_LIST, HANDLE, NO_KEY, RUNNING, TASK_LIST } from '../test/fixtures'
 import { type FakeAnswer, type FakeDirs, fake, json } from '../test/fake'
 import { CLI_VERSION, handTask, prepareTask } from './cli'
-import type { EpicList, TaskList } from './protocol'
+import type { EpicList, HandMode, TaskList } from './protocol'
 
 const NPX = `npx -y conport@${CLI_VERSION}`
 const SWITCHED = { match: 'terminal switch --terminal term-1 ', stdout: json({ ok: true, result: {} }) }
@@ -828,7 +828,7 @@ test('tasks list reads task list json', async () => {
  * Hands `task` of `list` to `agent` over the fake CLI, to do it or to review it; the answer, the
  * terminal and the one argument the agent gets.
  */
-async function hand(task: number, mode: 'do' | 'review', agent = 'claude', list: TaskList = TASK_LIST) {
+async function hand(task: number, mode: HandMode, agent = 'claude', list: TaskList = TASK_LIST) {
   const f = fake([
     { match: 'task list', stdout: json(list) },
     { match: 'epic agents', stdout: json(AGENTS) }
@@ -863,7 +863,7 @@ test('hand a task opens the chosen agent with the task as one argument', async (
   assert.deepEqual(created.map(({ workspaceId, title }) => ({ workspaceId, title })), [{ workspaceId: 'ws-root', title: 'conport task 41' }])
   assert.match(created[0]?.command ?? '', /^codex '/)
   assert.equal(args.length, 1)
-  assert.equal(task, handTask({ task: 41, project: HANDLE, mode: 'do', agent: 'codex' }))
+  assert.equal(task, handTask({ task: 41, project: HANDLE, mode: 'do', agent: 'codex', root: f.root }))
   // The task is read afresh; its project is named by the handle the CLI answered with.
   assert.deepEqual(f.conportCalls(), [['task', 'list', '--project', 'shop-api', '--json'], ['epic', 'agents', '--json'], ['epic', 'agents', '--json']])
   assert.deepEqual(f.orcaCalls(), [['terminal', 'switch', '--terminal', 'term-1', '--json']])
@@ -876,16 +876,32 @@ test('hand a task opens the chosen agent with the task as one argument', async (
   assert.ok(task.indexOf('--status IN_PROGRESS') < task.indexOf('--kind report'))
   assert.doesNotMatch(task, /--kind review/)
   pinned(task)
+  // The work is done apart from the main working copy: a worktree of its own beside the repository, on the task's branch.
+  const branch = `task-${41}`
+  const worktree = `git -C ${f.root} worktree add ${join(dirname(f.root), `repo-${branch}`)} -b ${branch}`
+  assert.ok(task.includes(`\`${worktree}\``), task)
+  assert.match(task, /never in the working copy of this terminal/)
+  // It is committed there by Conventional Commits, with no word of an AI; the person merges it.
+  assert.match(task, /Conventional Commits/)
+  assert.match(task, /never mentions an AI, an assistant or a model, and carries no Co-Authored-By line/)
+  assert.match(task, /Never merge the branch and never push it: merging it is the person's/)
+  // The report names the branch and its commit.
+  assert.ok(task.includes(`the branch \`${branch}\` and its last commit`), task)
+  const at = (text: string): number => task.indexOf(text)
+  assert.ok(at('--status IN_PROGRESS') < at(worktree))
+  assert.ok(at(worktree) < at('Conventional Commits'))
+  assert.ok(at('Conventional Commits') < at('--kind report'))
+  assert.doesNotMatch(task, /--status DONE/)
   // The agent picked is the one the sheet offers first next time.
   assert.equal(remembered, 'codex')
 })
 
 test('review a task asks the agent for a verdict in the journal', async () => {
-  const { answer, created, args, task } = await hand(42, 'review', 'claude')
+  const { f, answer, created, args, task } = await hand(42, 'review', 'claude')
   assert.equal(answer.ok, true)
   assert.deepEqual(created.map((c) => c.title), ['conport review 42'])
   assert.equal(args.length, 1)
-  assert.equal(task, handTask({ task: 42, project: HANDLE, mode: 'review', agent: 'claude' }))
+  assert.equal(task, handTask({ task: 42, project: HANDLE, mode: 'review', agent: 'claude', root: f.root }))
   assert.match(task, /^Review task 42 of the ConPort project prk7m2qx9d/)
   // It reads the whole journal: the brief, the report, the fixes.
   assert.match(task, /`[^`]* journal get --task 42 -p prk7m2qx9d`/)
@@ -897,20 +913,70 @@ test('review a task asks the agent for a verdict in the journal', async () => {
   assert.match(task, /not the author of the report/)
   assert.doesNotMatch(task, /--kind report|--status IN_PROGRESS/)
   pinned(task)
+  // It checks the branch the report names, in its worktree.
+  assert.ok(task.includes(`the branch the report names (\`task-${42}\` unless it names another)`), task)
+  assert.ok(task.includes(`\`git -C ${f.root} worktree list\``), task)
+  // On approve, with the person's yes, the task is closed DONE, its resolution added to the description.
+  const close = `${NPX} api tasks update --task_id 42 --status DONE --resolution <resolution> --project ${HANDLE}`
+  assert.ok(task.includes(`\`${close}\``), task)
+  assert.match(task, /ask the person whether to close the task; only with their yes/)
+  assert.match(task, /`## Resolution` section; the description itself stays as it is/)
+  assert.ok(task.indexOf('--kind review') < task.indexOf('--status DONE'))
+  assert.ok(task.indexOf('ask the person whether to close') < task.indexOf('--status DONE'))
+})
+
+/** The task list with task 46 in progress after a review that asked for changes. */
+const SENT_BACK: TaskList = {
+  ...TASK_LIST,
+  tasks: [...TASK_LIST.tasks, { id: 46, title: 'Trim the export', status: 'IN_PROGRESS', priority: 3, changes_requested: true }]
+}
+
+test('fix a task the review sent back: its branch, the latest review, a fix entry', async () => {
+  const { f, answer, created, args, task } = await hand(46, 'fix', 'codex', SENT_BACK)
+  assert.equal(answer.ok, true)
+  assert.deepEqual(created.map((c) => c.title), ['conport fix 46'])
+  assert.equal(args.length, 1)
+  assert.equal(task, handTask({ task: 46, project: HANDLE, mode: 'fix', agent: 'codex', root: f.root }))
+  assert.match(task, /^Fix task 46 of the ConPort project prk7m2qx9d after its review asked for changes/)
+  assert.match(task, /`[^`]* journal get --task 46 -p prk7m2qx9d`/)
+  assert.match(task, /the latest review in it: each of its findings is what to fix/)
+  // It goes on in the branch of the task and its worktree, never in this working copy.
+  const branch = `task-${46}`
+  assert.ok(task.includes(`\`git -C ${f.root} worktree list\``), task)
+  assert.ok(task.includes(`\`git -C ${f.root} worktree add ${join(dirname(f.root), `repo-${branch}`)} ${branch}\``), task)
+  assert.match(task, /never in the working copy of this terminal/)
+  assert.match(task, /Conventional Commits/)
+  assert.match(task, /never mentions an AI, an assistant or a model, and carries no Co-Authored-By line/)
+  // The fix goes to the journal, signed as the implementer: it moves the task back to review.
+  assert.match(task, /`[^`]* journal add --task 46 --kind fix --author implementer:codex --body-file <file> -p prk7m2qx9d`/)
+  assert.ok(task.indexOf('worktree list') < task.indexOf('Conventional Commits'))
+  assert.ok(task.indexOf('Conventional Commits') < task.indexOf('--kind fix'))
+  // It neither takes the task again nor creates the branch anew, reports or closes.
+  assert.doesNotMatch(task, /--status IN_PROGRESS|--status DONE|--kind report|--kind review| -b /)
+  pinned(task)
+})
+
+test('the review tells what follows a request for changes', async () => {
+  const { task } = await hand(42, 'review', 'claude')
+  assert.match(task, /On `changes_requested`, tell the person the task waits for its fixes: in the ConPort Epics panel of Orca they press refresh and hand it to an agent to fix/)
 })
 
 test('hand refuses a task that is gone or moved, and an agent that cannot take it', async () => {
   const cursor = { agents: [...AGENTS.agents, { id: 'cursor', label: 'Cursor', command: 'cursor-agent', found: false }] }
-  const cases: Array<[number, 'do' | 'review', string, string]> = [
+  const cases: Array<[number, HandMode, string, string]> = [
     [99, 'do', 'claude', 'task_not_found'],
     // Done by someone else meanwhile: a task in review is not done again, a todo one not reviewed.
     [42, 'do', 'claude', 'task_moved'],
     [41, 'review', 'claude', 'task_moved'],
     [43, 'review', 'claude', 'task_moved'],
+    // Only a task in progress that the review sent back is fixed: not one an agent is at, nor a todo one.
+    [43, 'fix', 'claude', 'task_moved'],
+    [41, 'fix', 'claude', 'task_moved'],
+    [46, 'do', 'claude', 'task_moved'],
     [41, 'do', 'gemini', 'agent_cannot_prepare']
   ]
   for (const [task, mode, agent, code] of cases) {
-    const { answer, created } = await hand(task, mode, agent)
+    const { answer, created } = await hand(task, mode, agent, SENT_BACK)
     assert.equal(answer.ok === false && answer.error.code, code, `${task} ${mode} ${agent}`)
     assert.deepEqual(created, [])
   }
@@ -926,9 +992,9 @@ test('a task with quotes in its project survives the shell, and the api key neve
   const key = 'cport_live_secretvalue'
   process.env.CONPORT_API_KEY = key
   try {
-    const { task, args, command } = await hand(41, 'do', 'claude', { ...TASK_LIST, project })
+    const { f, task, args, command } = await hand(41, 'do', 'claude', { ...TASK_LIST, project })
     assert.equal(args.length, 1)
-    assert.equal(task, handTask({ task: 41, project, mode: 'do', agent: 'claude' }))
+    assert.equal(task, handTask({ task: 41, project, mode: 'do', agent: 'claude', root: f.root }))
     assert.doesNotMatch(command, /cport_|secretvalue/)
   } finally {
     delete process.env.CONPORT_API_KEY

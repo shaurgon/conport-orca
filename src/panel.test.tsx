@@ -8,6 +8,7 @@ import { AGENTS, EMPTY_LIST, EPIC_LIST, FAILED, HANDLE, idle, NO_KEY, RELEASE, R
 import { fake, json, until } from '../test/fake'
 import * as panel from './panel'
 import type { EpicList, EpicStatus, EpicSummary, Milestone, OrcaProject, Result } from './protocol'
+import { CLI_VERSION } from './cli'
 import { AGENT_MISSING_ACTION, failureText } from './text'
 
 let view: TestPanel | undefined
@@ -497,6 +498,7 @@ const epic = (id: number, m: Milestone | null, extra: Partial<EpicSummary> = {})
   runnable: true,
   reason: null,
   run: null,
+  ready: false,
   ...extra
 })
 
@@ -555,7 +557,7 @@ test('a release milestone shows its open epics or that it is ready to close', as
   })
 })
 
-test('the epic row tells not started, in progress and ready to merge from conport counts', async () => {
+test('the epic row tells not started and in progress from conport counts, ready to merge from the readiness entry', async () => {
   const list: EpicList = {
     project: HANDLE,
     epics: [
@@ -564,30 +566,35 @@ test('the epic row tells not started, in progress and ready to merge from conpor
       // IN_PROGRESS with no task closed yet, and TODO with one closed: both in progress.
       epic(42, null, { status: 'IN_PROGRESS', progress: { open: 4, total: 4 } }),
       epic(43, null, { progress: { open: 18, total: 26 } }),
+      // Every task closed, and no entry of the core that the epic is ready: still in progress.
       epic(44, null, { status: 'IN_PROGRESS', progress: { open: 0, total: 6 } }),
       // No task at all is not ready to merge.
-      epic(45, null, { progress: { open: 0, total: 0 } })
+      epic(45, null, { progress: { open: 0, total: 0 } }),
+      // The core found it ready to merge.
+      epic(46, null, { progress: { open: 0, total: 5 }, ready: true })
     ]
   }
   const { host } = stub({ 'epics.list': () => ok(list) })
   view = await mount(panel, { host })
   const row = (id: number) => view?.find({ testId: `epic:${id}` })
   assert.deepEqual(
-    [40, 41, 42, 43, 44, 45].map((id) => row(id)?.props.description),
+    [40, 41, 42, 43, 44, 45, 46].map((id) => row(id)?.props.description),
     [
       'Не начат · 7 задач',
       'Не начат · 1 задача',
       'В работе · 0 из 4 закрыто',
       'В работе · 8 из 26 закрыто',
-      'Готов к вливанию · 6 из 6 закрыто',
-      'Не начат · 0 задач'
+      'В работе · 6 из 6 закрыто',
+      'Не начат · 0 задач',
+      'Готов к вливанию · 5 из 5 закрыто'
     ]
   )
   // Only an epic in progress draws the share of closed tasks.
   const bars = view.findAll({ type: 'Progress' }).map((p) => [p.props.label, p.props.value])
   assert.deepEqual(bars, [
     ['Закрыто 0 из 4', 0],
-    ['Закрыто 8 из 26', 31]
+    ['Закрыто 8 из 26', 31],
+    ['Закрыто 6 из 6', 100]
   ])
   // The state comes from ConPort, not from the run the CLI records: nothing names a phase.
   assert.doesNotMatch(textOf(view), /идёт|остановлен|подготовка/)
@@ -633,7 +640,7 @@ test('opening an epic reads its run once and offers start, stop or continue', as
   assert.deepEqual(['Исполнитель', 'Проверяющий', 'Поиск пробелов', 'Итоговая проверка'].map((label) => v.find({ label })?.props.value), ['claude', 'codex', 'claude', 'claude'])
   assert.match(
     textOf(v),
-    /Агенты работают с правами из настроек Orca и самих агентов, в ветке эпика; в основную ветку вливаете вы\. Их состояние и вопросы — в Orca\./
+    /Агенты работают с правами из настроек Orca и самих агентов, в ветке эпика; в основную ветку вливаете вы\. Состояние агентов и их вопросы — в Orca\. Агент, который спрашивает разрешение на каждую команду, будет останавливать работу над эпиком, пока вы ему не ответите\./
   )
   assert.ok(v.find({ text: 'Запустить' }))
   assert.match(textOf(v), /Агенты начнут работу в терминале Orca, в репозитории Shop/)
@@ -832,7 +839,7 @@ test('what holds an epic is said in russian, a reason the panel does not know na
   const reasons = [
     [`${t(13)} is IN_PROGRESS outside this run`, 'задача 13 в статусе IN_PROGRESS вне работы этих агентов'],
     [`${t(14)} is TODO`, 'задача 14 в статусе TODO'],
-    [`${t(16)}: the person is asked (stop-list case 1, in the panel)`, 'задача 16: вопрос к человеку, случай стоп-листа «Нужна необратимая операция»'],
+    [`${t(16)}: the person is asked (stop-list case 1, no gate in the host: answer it with conport epic answer 7 --task 16 --choice <option>)`, 'задача 16: вопрос к человеку, случай стоп-листа «Нужна необратимая операция»'],
     ['the epic: the person is asked (stop-list case 4, term_7)', 'эпик: вопрос к человеку, случай стоп-листа «Эпик вырос больше чем на 30%»'],
     [`${t(17)} waits for the epic's question`, 'задача 17 ждёт ответа на вопрос эпика'],
     [`${t(17)} waits for ${t(12)}, ${t(16)}`, 'задача 17 ждёт задач 12, 16'],
@@ -850,6 +857,40 @@ test('what holds an epic is said in russian, a reason the panel does not know na
   const said = view.findAll({ type: 'Text' }).map((x) => x.text).filter((x) => x.startsWith('· '))
   assert.deepEqual(said, reasons.map(([, russian]) => `· ${russian}`))
   assert.doesNotMatch(textOf(view), /outside this run|the person is asked|waits for|is red|left the epic|conflicts in|could not run|is going|later version/)
+})
+
+test('a question orca did not take is said as what the epic waits for, with the command that answers it', async () => {
+  const command = (task: string) => `npx -y conport@${CLI_VERSION} epic answer 7${task} --choice '<вариант>' --project ${HANDLE}`
+  const status = `npx -y conport@${CLI_VERSION} epic status 7 --project ${HANDLE}`
+  const waits = (v: TestPanel) => v.findAll({ type: 'Callout' }).filter((c) => c.props.title === 'Эпик ждёт вашего ответа')
+  const asked = { text: 'needs DROP TABLE users', options: ['allow', 'forbid'] }
+  const runs: EpicStatus[] = [
+    { ...RUNNING, questions: [{ task: 12, case: 1, ...asked, refused: true }, { task: 13, case: 1, ...asked, refused: false }] },
+    { ...FAILED, failure: null, questions: [{ task: null, case: 4, ...asked, refused: true }] },
+    { ...RUNNING, questions: [{ task: 13, case: 1, ...asked, refused: false }] }
+  ]
+  const said: string[][] = []
+  for (const run of runs) {
+    const { host } = stub({ 'run.get': () => ok(run) })
+    view = await mount(panel, { host, persisted: at(7) })
+    said.push(waits(view).map((c) => c.text))
+    // The question itself is Orca's to show, or the terminal's: never the panel's.
+    assert.doesNotMatch(textOf(view), /DROP TABLE|forbid/)
+    await view.unmount()
+    view = undefined
+  }
+  const box = (about: string, task: string, then: string) =>
+    `Эпик ждёт вашего ответа Orca не приняла вопрос по ${about}, и в Orca его нет. ` +
+    `Что сделать: ответьте на него в терминале репозитория командой ниже${then} ${command(task)} ` +
+    `Вопрос и варианты ответа печатает команда ${status}`
+  assert.deepEqual(said, [
+    // Agents at work take the answer themselves.
+    [box('задаче 12', ' --task 12', '')],
+    // Held agents take it once continued: the question stays in their record until then.
+    [box('эпику', '', ', затем нажмите «Продолжить»')],
+    // A question in Orca's gate is answered there: the panel says nothing of it.
+    []
+  ])
 })
 
 test('held agents without a failure show the reasons and no failure box', async () => {
@@ -1156,22 +1197,29 @@ test('choosing another project closes the sheet', async () => {
 test('the tasks tab groups review, in progress and todo by priority', async () => {
   // Out of order as given: the panel lists the todo ones by priority all the same.
   const tasks = [
-    { id: 51, title: 'Background chore', status: 'TODO', priority: 5 },
-    { id: 52, title: 'Fix the outage', status: 'TODO', priority: 1 },
-    { id: 53, title: 'Under review', status: 'REVIEW', priority: 4 },
-    { id: 54, title: 'Being done', status: 'IN_PROGRESS', priority: 2 },
-    { id: 55, title: 'Rotate the key', status: 'TODO', priority: 2 },
-    { id: 56, title: 'Simplify', status: 'TODO', priority: 3 },
-    { id: 57, title: 'Hints', status: 'TODO', priority: 4 }
+    { id: 51, title: 'Background chore', status: 'TODO', priority: 5, changes_requested: false },
+    { id: 52, title: 'Fix the outage', status: 'TODO', priority: 1, changes_requested: false },
+    { id: 53, title: 'Under review', status: 'REVIEW', priority: 4, changes_requested: false },
+    { id: 54, title: 'Being done', status: 'IN_PROGRESS', priority: 2, changes_requested: false },
+    { id: 55, title: 'Rotate the key', status: 'TODO', priority: 2, changes_requested: false },
+    { id: 56, title: 'Simplify', status: 'TODO', priority: 3, changes_requested: false },
+    { id: 57, title: 'Hints', status: 'TODO', priority: 4, changes_requested: false },
+    { id: 58, title: 'Back from review', status: 'IN_PROGRESS', priority: 3, changes_requested: true }
   ]
   const { host } = stub({ 'tasks.list': () => ok(tasks) })
   view = await mount(panel, { host })
-  assert.equal(tabsOf(view)[2], 'Задачи · 7')
+  assert.equal(tabsOf(view)[2], 'Задачи · 8')
   await tab(view, 'tasks')
   assert.deepEqual(groupsOf(view), ['Ждут проверки', 'В работе', 'К выполнению · по приоритету'])
   const rows = (label: string) => itemsIn(view as TestPanel, label)
   assert.deepEqual(rows('Ждут проверки'), [['53 · Under review', 'На проверке']])
-  assert.deepEqual(rows('В работе'), [['54 · Being done', 'В работе']])
+  assert.deepEqual(rows('В работе'), [
+    ['54 · Being done', 'В работе'],
+    ['58 · Back from review', 'Ждёт исправлений после проверки']
+  ])
+  // A task the review sent back is fixed by an agent; one an agent is at is its own.
+  assert.equal(view.find({ testId: 'fix:58' })?.text, 'Исправить')
+  assert.equal(view.find({ testId: 'fix:54' }), null)
   assert.deepEqual(rows('К выполнению · по приоритету'), [
     ['52 · Fix the outage', 'Критический · не начата'],
     ['55 · Rotate the key', 'Высокий · не начата'],
@@ -1186,9 +1234,11 @@ test('the tasks tab groups review, in progress and todo by priority', async () =
   assert.equal(view.find({ testId: 'review:54' }), null)
 })
 
-test('a task is handed to the agent chosen in the sheet, to do or to review', async () => {
+test('a task is handed to the agent chosen in the sheet, to do, to review or to fix', async () => {
+  const sentBack = TASK_LIST.tasks.map((t) => (t.id === 43 ? { ...t, changes_requested: true } : t))
   const { host, calls } = stub({
     'agents.get': () => ok({ agents: AGENTS.agents, chosen: null, preparer: 'codex' }),
+    'tasks.list': () => ok(sentBack),
     'task.hand': () => ok({ terminal: 'term-1' })
   })
   view = await mount(panel, { host })
@@ -1196,16 +1246,30 @@ test('a task is handed to the agent chosen in the sheet, to do or to review', as
   await view.press({ testId: 'hand:41' })
   assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Отдать агенту «Rotate the backup key»')
   assert.equal(view.find({ label: 'Кто возьмёт задачу' })?.props.value, 'codex')
+  // The agent works on a branch of its own and commits there; merging it is the person's.
+  assert.match(textOf(view), /Делает её в своей ветке, в отдельной рабочей копии рядом с репозиторием, проверяет и фиксирует коммитами/)
   await view.press({ text: 'Открыть в терминале' })
+  assert.match(textOf(view), /Работа ляжет в отдельную ветку задачи, вливаете её вы\./)
   await view.press({ testId: 'review:42' })
   assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Проверить «Compare the metrics after the release»')
+  // The reviewer checks that branch, and closes the task it approves only with the person's yes.
+  assert.match(textOf(view), /Проверяет ветку из отчёта/)
+  assert.match(textOf(view), /при одобрении с вашего согласия закрывает задачу/)
   await view.select({ label: 'Кто проверит' }, 'claude')
   await view.press({ text: 'Открыть в терминале' })
-  assert.deepEqual(inputsOf(calls, 'task.hand'), [
+  assert.match(textOf(view), /терминале «conport review 42» репозитория «Shop»: агент запишет вердикт в журнал задачи и при одобрении с вашего согласия закроет её/)
+  // A task the review sent back: the agent goes on in its branch with the findings of the review.
+  await view.press({ testId: 'fix:43' })
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Исправить «Check the backups»')
+  assert.match(textOf(view), /Продолжает в ветке задачи, исправляет и фиксирует коммитами/)
+  await view.select({ label: 'Кто исправит' }, 'codex')
+  await view.press({ text: 'Открыть в терминале' })
+  assert.match(textOf(view), /Исправления задачи 43 открыты в терминале «conport fix 43» репозитория «Shop»/)
+  assert.deepEqual(inputsOf(calls, 'task.hand').at(-1), { project: HANDLE, root: ROOT, task: 43, agent: 'codex', mode: 'fix' })
+  assert.deepEqual(inputsOf(calls, 'task.hand').slice(0, 2), [
     { project: HANDLE, root: ROOT, task: 41, agent: 'codex', mode: 'do' },
     { project: HANDLE, root: ROOT, task: 42, agent: 'claude', mode: 'review' }
   ])
-  assert.match(textOf(view), /терминале «conport review 42» репозитория «Shop»/)
 })
 
 test('a task list the cli cannot give is said in the tasks tab only', async () => {

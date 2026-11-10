@@ -33,7 +33,7 @@ import {
   Text,
   type PanelContext
 } from 'orca'
-import { missingDocument, PREPARE_AGENTS } from './cli'
+import { answerCommand, handMode, missingDocument, PREPARE_AGENTS, statusCommand } from './cli'
 import type {
   AgentKind,
   EpicList,
@@ -71,7 +71,9 @@ import {
   startNotice,
   STOP_NOTE,
   taskState,
-  TEAM_NOTE
+  TEAM_NOTE,
+  unaskedText,
+  UNASKED_TITLE
 } from './text'
 
 /** `npx` may fetch the CLI on its first call. */
@@ -230,8 +232,7 @@ function sheetAfter(open: Sheet, list: Result<EpicList>, outside: Result<Outside
     return epic && missing ? { kind: missing, epic } : null
   }
   const task = outside.ok ? outside.data.find((t) => t.id === open.task.id) : undefined
-  const wanted = open.kind === 'do' ? 'TODO' : 'REVIEW'
-  return task?.status === wanted ? { kind: open.kind, task } : null
+  return task && handMode(task) === open.kind ? { kind: open.kind, task } : null
 }
 
 /**
@@ -762,26 +763,36 @@ function PrepareTab({ list }: { list: EpicList }) {
   )
 }
 
+/** The button of a task by what it can be handed for, the key of its test id and the icon of its row. */
+const HAND_ACTIONS: Record<HandMode, { key: string; label: string; icon: 'check' | 'flag' | 'agent' }> = {
+  do: { key: 'hand', label: 'Отдать агенту', icon: 'flag' },
+  review: { key: 'review', label: 'Проверить', icon: 'check' },
+  fix: { key: 'fix', label: 'Исправить', icon: 'agent' }
+}
+
+/** The sheet of a task by what it is handed for: its title and who takes it. */
+const HAND_SHEETS: Record<HandMode, { title: string; who: string }> = {
+  do: { title: 'Отдать агенту', who: 'Кто возьмёт задачу' },
+  review: { title: 'Проверить', who: 'Кто проверит' },
+  fix: { title: 'Исправить', who: 'Кто исправит' }
+}
+
 function taskRow(task: OutsideTask) {
   const key = `task:${task.id}`
   const title = `${task.id} · ${task.title}`
-  const action =
-    task.status === 'REVIEW'
-      ? { key: `review:${task.id}`, label: 'Проверить', mode: 'review' as const }
-      : task.status === 'TODO'
-        ? { key: `hand:${task.id}`, label: 'Отдать агенту', mode: 'do' as const }
-        : null
-  if (action === null) return <ListItem key={key} title={title} description={taskState(task)} icon="agent" />
+  const mode = handMode(task)
+  if (mode === null) return <ListItem key={key} title={title} description={taskState(task)} icon="agent" />
+  const action = HAND_ACTIONS[mode]
   return (
-    <ListItem key={key} title={title} description={taskState(task)} icon={action.mode === 'review' ? 'check' : 'flag'}>
+    <ListItem key={key} title={title} description={taskState(task)} icon={action.icon}>
       <Row>
         <Button
-          key={action.key}
+          key={`${action.key}:${task.id}`}
           size="xs"
           variant="outline"
           icon="agent"
           disabled={!canHand()}
-          onPress={() => openSheet({ kind: action.mode, task })}
+          onPress={() => openSheet({ kind: mode, task })}
         >
           {action.label}
         </Button>
@@ -851,9 +862,9 @@ function SheetCard({ open }: { open: Sheet }) {
           who: 'Кто подготовит'
         }
       : {
-          title: `${open.kind === 'do' ? 'Отдать агенту' : 'Проверить'} «${open.task.title}»`,
+          title: `${HAND_SHEETS[open.kind].title} «${open.task.title}»`,
           description: `${open.task.id} · ${taskState(open.task).toLowerCase()}`,
-          who: open.kind === 'do' ? 'Кто возьмёт задачу' : 'Кто проверит'
+          who: HAND_SHEETS[open.kind].who
         }
   // The key of a component's own root does not reach the tree: the card is wrapped.
   return (
@@ -1036,12 +1047,56 @@ function HeldBox({ status }: { status: EpicStatus }) {
   )
 }
 
+/**
+ * The questions of the run Orca did not take, each said as what the epic waits for with the
+ * command that answers it: no gate of Orca holds them, and nothing else would show them.
+ */
+function Unasked({ status, project }: { status: EpicStatus; project: string }) {
+  const refused = status.questions.filter((q) => q.refused)
+  return (
+    <Stack gap="sm">
+      {refused.map((q) => {
+        const text = unaskedText(q.task, ACTIVE_PHASES.includes(status.phase))
+        return (
+          <Callout key={`unasked:${q.task ?? 'epic'}`} tone="warning" icon="warning" title={UNASKED_TITLE}>
+            <Stack gap="xs">
+              <Text>{text.what}</Text>
+              <Text>{`${FAILURE_ACTION}${text.action}`}</Text>
+              <Text>
+                <Code>{answerCommand(status.epic, project, q.task)}</Code>
+              </Text>
+              <Text muted size="xs">
+                {text.hint}
+              </Text>
+              <Text muted size="xs">
+                <Code>{statusCommand(status.epic, project)}</Code>
+              </Text>
+            </Stack>
+          </Callout>
+        )
+      })}
+    </Stack>
+  )
+}
+
 /** What can be done with the agents of the open epic, by its run as read when it was opened. */
 function RunPart({ epic, name }: { epic: number; name: string }) {
   const state = read(run)
   if (state === null) return <Skeleton shape="block" label="Читаю, работают ли агенты эпика" />
   if (!state.ok) return <RefusalBox error={state.error} />
-  const status = state.data
+  const controls = <RunControls status={state.data} epic={epic} name={name} />
+  const project = handle()
+  if (project === null || !state.data.questions.some((q) => q.refused)) return controls
+  return (
+    <Stack gap="lg">
+      <Unasked status={state.data} project={project} />
+      {controls}
+    </Stack>
+  )
+}
+
+/** Start, continue or stop the agents of the open epic, by the phase of its run. */
+function RunControls({ status, epic, name }: { status: EpicStatus; epic: number; name: string }) {
   if (ACTIVE_PHASES.includes(status.phase)) return <AtWork epic={epic} />
   if (status.phase === 'ready') {
     const head = status.outcome?.kind === 'ready' ? `: ${status.outcome.head}` : ''

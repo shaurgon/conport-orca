@@ -36,6 +36,8 @@ export default defineCheck({
   'tasks': scenario(EPIC_LIST, { tab: 'tasks' }),
   'ready-to-run': scenario(EPIC_LIST, { epic: 15, status: idle(15) }),
   'running': scenario(EPIC_LIST, { epic: 7, status: RUNNING }),
+  // A question Orca would not take: the epic waits for the person's answer by the command.
+  'question-not-taken': scenario(EPIC_LIST, { epic: 7, status: { ...RUNNING, questions: [{ task: 12, case: 1, refused: true }] } }),
   'failed': scenario(EPIC_LIST, { epic: 7, status: FAILED }),
   'stopped': scenario(EPIC_LIST, { epic: 7, status: STOPPED }),
   'no-project': {

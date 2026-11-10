@@ -4,7 +4,7 @@
 import { readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
-import { CONPORT, commandLine, handTask, interpret, missingDocument, PREPARE_AGENTS, prepareTask, runCommand } from './cli'
+import { CONPORT, commandLine, handMode, handTask, interpret, missingDocument, PREPARE_AGENTS, prepareTask, runCommand } from './cli'
 import { runProcess } from './exec'
 import type { AgentKind, EpicList, EpicRef, EpicStatus, OrcaProject, RepoContext, Result, Roles, TaskList } from './protocol'
 import { AGENT_MISSING_ACTION, PREPARE_AGENTS_ACTION } from './text'
@@ -311,15 +311,12 @@ export function createWorker(deps: WorkerDeps): {
       if (!list.ok) return list
       const found = list.data.tasks.find((t) => t.id === task)
       if (!found) return fail('task_not_found', `задачи ${task} нет среди открытых задач вне эпиков`, 'нажмите «Обновить»')
-      if (found.status !== (mode === 'do' ? 'TODO' : 'REVIEW')) {
-        return fail(
-          'task_moved',
-          mode === 'do' ? `задачу ${task} уже взяли в работу` : `задача ${task} не ждёт проверки`,
-          'нажмите «Обновить»'
-        )
+      if (handMode(found) !== mode) {
+        const moved = { do: `задачу ${task} уже взяли в работу`, review: `задача ${task} не ждёт проверки`, fix: `задача ${task} не ждёт исправлений` }
+        return fail('task_moved', moved[mode], 'нажмите «Обновить»')
       }
-      const title = `conport ${mode === 'do' ? 'task' : 'review'} ${task}`
-      return startAgent({ project, root, agent }, title, handTask({ task, project: list.data.project, mode, agent }))
+      const title = `conport ${{ do: 'task', review: 'review', fix: 'fix' }[mode]} ${task}`
+      return startAgent({ project, root, agent }, title, handTask({ task, project: list.data.project, mode, agent, root }))
     })
 
     orca.panels.handle('run.stop', async (ref) => {

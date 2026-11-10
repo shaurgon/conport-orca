@@ -17,7 +17,8 @@ The panel shows:
    - **To start**: the epics with a spec and a plan, by milestone in the order of the roadmap, the
      epics outside a milestone last. A release milestone tells how many of its epics are open, or
      that it is ready to close. Each epic tells where it stands by its tasks in ConPort — not
-     started, in progress with the share of tasks closed, or ready to merge;
+     started, or in progress with the share of tasks closed — or ready to merge, once the epic's
+     run has written to ConPort that it is;
    - **To prepare**: the epics without a spec, or with a spec and no plan. **Prepare** (or
      **Write the plan**) opens a sheet with what the agent will do and a choice of the agent found
      on this machine that takes its first request as an argument — Claude Code, Codex or Cursor,
@@ -30,12 +31,18 @@ The panel shows:
      Once the plan is in, refresh — or come back to the panel, which reads the project again
      whenever it comes into view — and the epic is ready to start;
    - **Tasks**: the open tasks outside the epics — waiting for review, in progress, and to do by
-     priority. **Hand to an agent** and **Review** open the same sheet: the agent starts in the
+     priority. **Hand to an agent**, **Review** and **Fix** open the same sheet: the agent starts in the
      root of the project with its task as one argument. To do a task, it takes it as the conport
-     skill describes — sets it IN_PROGRESS, does it and writes its report to the journal of the
-     task (`journal add --kind report`); to review one, it reads the journal of the task, checks
-     the work and writes its review with a verdict (`journal add --kind review --verdict
-     approve|changes_requested`);
+     skill describes — sets it IN_PROGRESS, does it on its own branch `task-<N>` in a worktree
+     beside the repository, commits it there and writes its report, naming the branch and the
+     commit, to the journal of the task (`journal add --kind report`); you merge the branch. To
+     review one, it reads the journal of the task, checks that branch and writes its review with
+     a verdict (`journal add --kind review --verdict approve|changes_requested`); on `approve`,
+     and only with your yes, it closes the task with a resolution added to its description
+     (`api tasks update --status DONE --resolution …`). A task the review sent back
+     (`changes_requested`) waits in progress with **Fix**: the agent goes on in the same branch
+     and its worktree, fixes what the latest review found, commits and writes its fix to the
+     journal (`journal add --kind fix`), which sends the task to review again;
 3. the screen of an epic: its milestone, its spec and plan, where it stands, and its run, read
    once when the epic is opened. Not started: the team — an agent for each role (implementer,
    reviewer, gap hunter, final reviewer), remembered for the project — and **Start**, which opens
@@ -43,18 +50,24 @@ The panel shows:
    `npx -y conport@<version> epic run <N> --project <handle> --host orca …`. Agents at work: a
    card that sends you to Orca for their state and questions, and **Stop the agents**
    (`conport epic stop`). Stopped or held: why, and **Continue**. Ready to merge: that line.
+   A question Orca would not take is shown as what the epic waits for, with the command that
+   answers it.
+
+A stop-list question of a run is answered in its gate in Orca, or with
+`npx -y conport@<version> epic answer <N> [--task <T>] --choice <option>` in a terminal.
 
 Every command the plugin types or gives an agent carries the project and the pinned CLI release;
 the API key is never in one.
 
 ## Install
 
-Before installing, make sure of three things:
+Before installing, make sure of four things:
 
 - **Orca 1.4.248 or later** with plugins turned on (Settings → Plugins → "Turn on plugins").
 - **Node.js 18 or later with `npx`, and the `orca` CLI, on the PATH Orca's app sees.** The
   plugin's worker starts both as child processes; it ships no CLI of its own and fetches the
   `conport` CLI through `npx` on first use.
+- **A `main` branch in the repository:** the branch of an epic is cut from `main`.
 - **A ConPort API key** in `~/.config/conport/.env` (or `$XDG_CONFIG_HOME/conport/.env`):
 
   ```sh
@@ -97,7 +110,7 @@ when the panel asks: no timer, no status bar item, no notification.
 
 The panel does not choose how agents ask for permission: that comes from Orca's and the agents' own
 settings. They work in the branch of the epic; you merge it into the main branch. An agent that
-asks before every command waits in Orca until someone answers it.
+asks before every command stops the work on the epic in Orca until someone answers it.
 
 ## Develop
 

@@ -63,6 +63,11 @@ export interface EpicList {
     runnable: boolean
     reason: string | null
     run: { phase: RunPhase } | null
+    /**
+     * Every task closed, and the core's newest readiness entry of the epic says it is ready to
+     * merge, written after the last change of its tasks.
+     */
+    ready: boolean
   }>
 }
 
@@ -75,6 +80,8 @@ export interface OutsideTask {
   status: 'TODO' | 'IN_PROGRESS' | 'REVIEW'
   /** 1 critical … 5 idle. */
   priority: number
+  /** In progress after a review that asked for changes: its fixes are due. */
+  changes_requested: boolean
 }
 
 /** `conport task list --json`: the open tasks of the project outside its epics, by priority. */
@@ -84,8 +91,8 @@ export interface TaskList {
   tasks: OutsideTask[]
 }
 
-/** What an agent is handed a task for: to do it, or to review the work done. */
-export type HandMode = 'do' | 'review'
+/** What an agent is handed a task for: to do it, to review the work done, or to fix what the review found. */
+export type HandMode = 'do' | 'review' | 'fix'
 
 export type RunOutcome =
   | null
@@ -93,13 +100,23 @@ export type RunOutcome =
   | { kind: 'held'; reasons: string[] }
   | { kind: 'stopped' }
 
+/** A stop-list question of an epic's run, the fields the panel reads: its text and options are Orca's to show. */
+export interface RunQuestion {
+  /** The task it is about; null for the epic itself. */
+  task: number | null
+  case: number
+  /** Orca would not take it: no gate in Orca holds it, it is answered with `conport epic answer` only. */
+  refused: boolean
+}
+
 /**
  * `conport epic status <N> --json`, the fields the panel reads: the CLI prints more (the tasks of
- * the run, the stop-list questions), which are Orca's to show.
+ * the run), which are Orca's to show.
  */
 export interface EpicStatus {
   epic: number
   phase: RunPhase
+  questions: RunQuestion[]
   outcome: RunOutcome
   /** Why the last run failed, as it refused: given only while the run is held. */
   failure: Refusal | null

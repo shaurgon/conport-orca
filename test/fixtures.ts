@@ -25,7 +25,8 @@ export const EPIC_LIST: EpicList = {
       milestone: RELEASE,
       runnable: true,
       reason: null,
-      run: { phase: 'running' }
+      run: { phase: 'running' },
+      ready: false
     },
     {
       id: 9,
@@ -35,7 +36,8 @@ export const EPIC_LIST: EpicList = {
       milestone: RELEASE,
       runnable: false,
       reason: 'no plan',
-      run: null
+      run: null,
+      ready: false
     },
     {
       id: 10,
@@ -45,7 +47,8 @@ export const EPIC_LIST: EpicList = {
       milestone: null,
       runnable: false,
       reason: 'no spec',
-      run: null
+      run: null,
+      ready: false
     },
     {
       id: 15,
@@ -55,7 +58,8 @@ export const EPIC_LIST: EpicList = {
       milestone: null,
       runnable: true,
       reason: null,
-      run: null
+      run: null,
+      ready: false
     }
   ]
 }
@@ -71,11 +75,11 @@ export const EMPTY_LIST: EpicList = { project: HANDLE, epics: [] }
 export const TASK_LIST: TaskList = {
   project: HANDLE,
   tasks: [
-    { id: 41, title: 'Rotate the backup key', status: 'TODO', priority: 2 },
-    { id: 42, title: 'Compare the metrics after the release', status: 'REVIEW', priority: 3 },
-    { id: 43, title: 'Check the backups', status: 'IN_PROGRESS', priority: 3 },
-    { id: 44, title: 'Simplify the search answer', status: 'TODO', priority: 3 },
-    { id: 45, title: 'Hints on an empty search', status: 'TODO', priority: 4 }
+    { id: 41, title: 'Rotate the backup key', status: 'TODO', priority: 2, changes_requested: false },
+    { id: 42, title: 'Compare the metrics after the release', status: 'REVIEW', priority: 3, changes_requested: false },
+    { id: 43, title: 'Check the backups', status: 'IN_PROGRESS', priority: 3, changes_requested: false },
+    { id: 44, title: 'Simplify the search answer', status: 'TODO', priority: 3, changes_requested: false },
+    { id: 45, title: 'Hints on an empty search', status: 'TODO', priority: 4, changes_requested: false }
   ]
 }
 
@@ -90,6 +94,7 @@ export const AGENTS: { agents: AgentKind[] } = {
 export const RUNNING: EpicStatus = {
   epic: 7,
   phase: 'running',
+  questions: [],
   outcome: null,
   failure: null
 }
@@ -98,6 +103,7 @@ export const RUNNING: EpicStatus = {
 export const idle = (epic: number): EpicStatus => ({
   epic,
   phase: 'none',
+  questions: [],
   outcome: null,
   failure: null
 })
