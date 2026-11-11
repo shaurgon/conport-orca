@@ -811,6 +811,9 @@ async function hand(task: number, mode: HandMode, agent = 'claude', list: TaskLi
   return { f, answer, created, command, args, task: args[0] ?? '', remembered: preparer.ok ? preparer.data.preparer : null }
 }
 
+/** The first step of a handed task: `init` of ConPort hands out no questions about the project. */
+const INIT_QUIET = 'If you call `init` of ConPort, call it with `questions=false`: this run takes up no questions about the project.'
+
 /** Every ConPort command of a task names the pinned CLI and the project, and no other one is in it. */
 function pinned(task: string): void {
   const commands = conportCommands(task)
@@ -836,6 +839,7 @@ test('hand a task opens the chosen agent with the task as one argument', async (
   assert.deepEqual(f.orcaCalls(), [['terminal', 'switch', '--terminal', 'term-1', '--json']])
   // The agent is taken by the conport skill: IN_PROGRESS, the work, a report in the journal of the task.
   assert.match(task, /^Do task 41 of the ConPort project prk7m2qx9d/)
+  assert.ok(task.includes(`\n1. ${INIT_QUIET} Read the task: `), task)
   assert.match(task, /conport skill/)
   assert.match(task, /in the language they write in/)
   assert.match(task, /`[^`]* api tasks update --task_id 41 --status IN_PROGRESS --project prk7m2qx9d`/)
@@ -870,6 +874,7 @@ test('review a task asks the agent for a verdict in the journal', async () => {
   assert.equal(args.length, 1)
   assert.equal(task, handTask({ task: 42, project: HANDLE, mode: 'review', agent: 'claude', root: f.root }))
   assert.match(task, /^Review task 42 of the ConPort project prk7m2qx9d/)
+  assert.ok(task.includes(`\n1. ${INIT_QUIET} Read the task: `), task)
   // It reads the whole journal: the brief, the report, the fixes.
   assert.match(task, /`[^`]* journal get --task 42 -p prk7m2qx9d`/)
   assert.match(task, /brief, the report and the fixes/)
@@ -905,6 +910,7 @@ test('fix a task the review sent back: its branch, the latest review, a fix entr
   assert.equal(args.length, 1)
   assert.equal(task, handTask({ task: 46, project: HANDLE, mode: 'fix', agent: 'codex', root: f.root }))
   assert.match(task, /^Fix task 46 of the ConPort project prk7m2qx9d after its review asked for changes/)
+  assert.ok(task.includes(`\n1. ${INIT_QUIET} Read the task: `), task)
   assert.match(task, /`[^`]* journal get --task 46 -p prk7m2qx9d`/)
   assert.match(task, /the latest review in it: each of its findings is what to fix/)
   // It goes on in the branch of the task and its worktree, never in this working copy.

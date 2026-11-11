@@ -205,6 +205,8 @@ const keepBlocks = (blocks: string): string =>
   '- This task was given to you once, as the argument you were started with, and is stored nowhere else. ' +
   `When the context is compacted, keep its blocks ${blocks} word for word.`
 const PLAN_FILE = '.superpowers/plans/doc-<M>.md'
+/** A run started from the panel takes up no questions about the project: `init` hands out none. */
+const INIT_QUIET = 'If you call `init` of ConPort, call it with `questions=false`: this run takes up no questions about the project.'
 const pullPlan = (pull: string): string =>
   `Pull the plan: ${pull}. It writes \`${PLAN_FILE}\` and a \`.conport.json\` beside it: keep both.`
 
@@ -228,6 +230,9 @@ export function epicTask({ epic, project, worktree, base, harness, roles }: Epic
   const journal = (kind: string): string => cli(`journal add --task <id> --kind ${kind} --body-file <file>`)
   const tasks = `tasks list --parent_task_id ${epic} --status ALL --include_snoozed true --limit 200`
   const forEpic = (quote: string): string => quote.replace('<M>', String(epic))
+  // The working copies of the tasks go into the folder that holds the working copy of the epic.
+  const folder = worktree.replace(/\/+$/, '').replace(/\/[^/]*$/, '')
+  const baseWord = shellWord(base)
   // An approved task is in REVIEW: only a review entry sends it back to its implementer.
   const sendBack = typed ? '' : `, ${journal('review --verdict changes_requested')}`
   const { overlay, skill, finish: finishMode, tail } = QUOTES
@@ -283,12 +288,15 @@ export function epicTask({ epic, project, worktree, base, harness, roles }: Epic
           'and the task number; never do the work of a role yourself. A subagent never starts a subagent.'
       ]
 
+  const take = `Take the task before dispatching its implementer: ${api('tasks update --task_id <id> --status IN_PROGRESS')}.`
   const oneTask = typed
     ? 'One task. Write the brief into its journal (`kind="brief"`: the full text of its plan section and the context the implementer needs). ' +
+      `${take} ` +
       'Dispatch the implementer with the task number and how to read the journal, nothing else. Its report is the `report` entry. ' +
       'Dispatch the reviewer with the task number and the two commits to compare. Its verdict is the `review` entry: ' +
       'on `changes_requested` the implementer fixes every finding and writes a `fix` entry, then the reviewer reviews again; on `approve` go to step 7.'
     : `One task. Write the brief into its journal: ${journal('brief')} (the full text of its plan section and the context the implementer needs). ` +
+      `${take} ` +
       `Dispatch the implementer with the task number and how to read the journal, ${cli('journal get --task <id>')}, nothing else. ` +
       `Its report is the \`report\` entry: ${journal('report')}. ` +
       'Dispatch the reviewer with the task number and the two commits to compare. ' +
@@ -310,7 +318,7 @@ export function epicTask({ epic, project, worktree, base, harness, roles }: Epic
     : `: \`${npx} api progress create --project ${project} --title "${ready}" --description "<body>" --linked_item_type task --linked_item_id ${epic}\``
 
   const steps = [
-    `Read the epic: ${api(`tasks get --task_id ${epic}`)}, and its tasks: ${api(tasks)}. The dependencies of a task are in its \`tasks get\`.`,
+    `${INIT_QUIET} Read the epic: ${api(`tasks get --task_id ${epic}`)}, and its tasks: ${api(tasks)}. The dependencies of a task are in its \`tasks get\`.`,
     `${pullPlan(cli(`plan pull ${epic}`))} Read the whole plan, its Global Constraints first. ` +
       `Its last section, "${tail.section}", and the "${tail.contract}" above it are written by \`plan pull\`: they are no task of the epic.`,
     `Read the spec: ${api(`links list --item_type task --item_id ${epic}`)} names the document of type \`spec\` linked to the epic with \`clarifies\`; ` +
@@ -320,10 +328,14 @@ export function epicTask({ epic, project, worktree, base, harness, roles }: Epic
       '`git worktree list` shows the working copies an earlier session left: a task whose branch `task-<id>` has a working copy goes on in that copy; ' +
       'a branch `task-<id>` without one gets a working copy added for it; ' +
       `never delete a branch or a working copy that holds commits not merged into ${branch}. ` +
-      `If the epic is TODO, take it: ${api(`tasks update --task_id ${epic} --status IN_PROGRESS`)}.`,
+      `If the epic is TODO, take it: ${api(`tasks update --task_id ${epic} --status IN_PROGRESS`)}. ` +
+      `If ${branch} does not hold the tip of \`${base}\` (\`git merge-base --is-ancestor ${baseWord} epic-${epic}\` fails), ` +
+      `bring \`${base}\` into it in this working copy before any branch \`task-<id>\` is cut: \`git merge --ff-only ${baseWord}\`, ` +
+      `and when that refuses because ${branch} has commits of its own, \`git merge ${baseWord}\`; a conflict of that merge is a question to the person.`,
     'Order. A task is ready when every task it depends on (`blocks`, `requires`) is DONE; among ready tasks the order is the section number of the plan. ' +
       `Run ready tasks in parallel, each in a working copy of its own on the branch \`task-<id>\` cut from ${branch}; ` +
-      'start the next ones as soon as their dependencies close.',
+      'start the next ones as soon as their dependencies close. ' +
+      `The working copy of a task is the folder ${folder}/task-<id>, beside ${worktree}, never inside it.`,
     oneTask,
     `Merge. Merge \`task-<id>\` into ${branch} in this working copy, one task at a time, and run there the checks the plan names in its Global Constraints. ` +
       'Red checks or a conflict go back to the implementer of that task as one fix round: the task is in REVIEW, where a `fix` entry is not accepted, ' +
@@ -382,7 +394,7 @@ export function epicTask({ epic, project, worktree, base, harness, roles }: Epic
 export function epicWorkflowTask({ epic, project, root, base }: EpicWorkflowInput): string {
   const pull = `\`npx -y conport@${CLI_VERSION} plan pull ${epic} -p ${project}\``
   const steps = [
-    pullPlan(pull),
+    `${INIT_QUIET} ${pullPlan(pull)}`,
     `Start the workflow: \`/conport:epic {"epic": ${epic}, "project": "${project}", "plan": "${PLAN_FILE}"}\`.`,
     'When it ends, tell the person its outcome as the run printed it — `EPIC_CLOSED`, `DONE_EPIC_OPEN` or `DONE_WITH_UNRESOLVED_CRITICALS` — ' +
       `with the tasks done, failed and skipped and the findings left, and that pushing \`${base}\` and the release are theirs.`
@@ -453,7 +465,7 @@ export function handTask({ task, project, mode, agent, root }: HandInput): strin
       'Never print or pass the ConPort API key: the CLI reads it itself. ' +
       'With the ConPort MCP server at hand, its tools for the same steps do as well.'
   ]
-  const read = `Read the task: ${api(`tasks get --task_id ${task}`)}, and its journal: ${cli(`journal get --task ${task}`)}.`
+  const read = `${INIT_QUIET} Read the task: ${api(`tasks get --task_id ${task}`)}, and its journal: ${cli(`journal get --task ${task}`)}.`
   const branch = `task-${task}`
   const folder = taskWorktree(root, task)
   const git = (args: string[]): string => `\`${commandLine(['git', '-C', root, ...args])}\``

@@ -83,12 +83,12 @@ const FIRST_TEXT = [
   'If a type is not found, stop and ask the person: the type is not installed, or its plugin is out of date. Do not go on without it.',
   '',
   'Steps',
-  '1. Read the epic: `npx -y conport@<V> api tasks get --task_id 7 --project prk7m2qx9d`, and its tasks: `npx -y conport@<V> api tasks list --parent_task_id 7 --status ALL --include_snoozed true --limit 200 --project prk7m2qx9d`. The dependencies of a task are in its `tasks get`.',
+  '1. If you call `init` of ConPort, call it with `questions=false`: this run takes up no questions about the project. Read the epic: `npx -y conport@<V> api tasks get --task_id 7 --project prk7m2qx9d`, and its tasks: `npx -y conport@<V> api tasks list --parent_task_id 7 --status ALL --include_snoozed true --limit 200 --project prk7m2qx9d`. The dependencies of a task are in its `tasks get`.',
   '2. Pull the plan: `npx -y conport@<V> plan pull 7 -p prk7m2qx9d`. It writes `.superpowers/plans/doc-<M>.md` and a `.conport.json` beside it: keep both. Read the whole plan, its Global Constraints first. Its last section, "ConPort finish", and the "ConPort execution contract" above it are written by `plan pull`: they are no task of the epic.',
   '3. Read the spec: `npx -y conport@<V> api links list --item_type task --item_id 7 --project prk7m2qx9d` names the document of type `spec` linked to the epic with `clarifies`; `npx -y conport@<V> documents get doc-<S> -p prk7m2qx9d` writes it to `.superpowers/docs/doc-<S>.md`.',
-  '4. Find where the epic stands, for it may have been started before. A task DONE or CANCELLED is finished. A task in REVIEW goes to its review. A task IN_PROGRESS goes on from its journal: the latest entry says whether a report, a review or a fix is due. `git worktree list` shows the working copies an earlier session left: a task whose branch `task-<id>` has a working copy goes on in that copy; a branch `task-<id>` without one gets a working copy added for it; never delete a branch or a working copy that holds commits not merged into `epic-7`. If the epic is TODO, take it: `npx -y conport@<V> api tasks update --task_id 7 --status IN_PROGRESS --project prk7m2qx9d`.',
-  '5. Order. A task is ready when every task it depends on (`blocks`, `requires`) is DONE; among ready tasks the order is the section number of the plan. Run ready tasks in parallel, each in a working copy of its own on the branch `task-<id>` cut from `epic-7`; start the next ones as soon as their dependencies close.',
-  '6. One task. Write the brief into its journal (`kind="brief"`: the full text of its plan section and the context the implementer needs). Dispatch the implementer with the task number and how to read the journal, nothing else. Its report is the `report` entry. Dispatch the reviewer with the task number and the two commits to compare. Its verdict is the `review` entry: on `changes_requested` the implementer fixes every finding and writes a `fix` entry, then the reviewer reviews again; on `approve` go to step 7.',
+  '4. Find where the epic stands, for it may have been started before. A task DONE or CANCELLED is finished. A task in REVIEW goes to its review. A task IN_PROGRESS goes on from its journal: the latest entry says whether a report, a review or a fix is due. `git worktree list` shows the working copies an earlier session left: a task whose branch `task-<id>` has a working copy goes on in that copy; a branch `task-<id>` without one gets a working copy added for it; never delete a branch or a working copy that holds commits not merged into `epic-7`. If the epic is TODO, take it: `npx -y conport@<V> api tasks update --task_id 7 --status IN_PROGRESS --project prk7m2qx9d`. If `epic-7` does not hold the tip of `main` (`git merge-base --is-ancestor main epic-7` fails), bring `main` into it in this working copy before any branch `task-<id>` is cut: `git merge --ff-only main`, and when that refuses because `epic-7` has commits of its own, `git merge main`; a conflict of that merge is a question to the person.',
+  '5. Order. A task is ready when every task it depends on (`blocks`, `requires`) is DONE; among ready tasks the order is the section number of the plan. Run ready tasks in parallel, each in a working copy of its own on the branch `task-<id>` cut from `epic-7`; start the next ones as soon as their dependencies close. The working copy of a task is the folder /work/task-<id>, beside /work/app-epic-7, never inside it.',
+  '6. One task. Write the brief into its journal (`kind="brief"`: the full text of its plan section and the context the implementer needs). Take the task before dispatching its implementer: `npx -y conport@<V> api tasks update --task_id <id> --status IN_PROGRESS --project prk7m2qx9d`. Dispatch the implementer with the task number and how to read the journal, nothing else. Its report is the `report` entry. Dispatch the reviewer with the task number and the two commits to compare. Its verdict is the `review` entry: on `changes_requested` the implementer fixes every finding and writes a `fix` entry, then the reviewer reviews again; on `approve` go to step 7.',
   '7. Merge. Merge `task-<id>` into `epic-7` in this working copy, one task at a time, and run there the checks the plan names in its Global Constraints. Red checks or a conflict go back to the implementer of that task as one fix round: the task is in REVIEW, where a `fix` entry is not accepted, so the reviewer of that task first writes a `review` entry with the verdict `changes_requested` and the output of the checks or of the merge, and the fix round follows as in step 6. Then close the task: `npx -y conport@<V> api tasks update --task_id <id> --status DONE --resolution "<what was done, the merge commit>" --project prk7m2qx9d`, and remove its working copy.',
   '8. Gap hunt, once, when every task of the epic is DONE or CANCELLED: the whole branch `epic-7` against the spec, with the goal as the spec states it. A Blocker becomes a task of the epic; a Should-fix and a Note are kept for step 12.',
   '9. Final review, once, after the tasks of the gap hunt are merged: the whole branch against the spec. A Critical or Important finding becomes a task of the epic; a Minor is kept for step 12. There is no second final review.',
@@ -112,7 +112,7 @@ const THIRD_TEXT = [
   'Never: push anything; deploy; apply a migration or touch a production service; merge by hand.',
   '',
   'Steps',
-  '1. Pull the plan: `npx -y conport@<V> plan pull 7 -p prk7m2qx9d`. It writes `.superpowers/plans/doc-<M>.md` and a `.conport.json` beside it: keep both.',
+  '1. If you call `init` of ConPort, call it with `questions=false`: this run takes up no questions about the project. Pull the plan: `npx -y conport@<V> plan pull 7 -p prk7m2qx9d`. It writes `.superpowers/plans/doc-<M>.md` and a `.conport.json` beside it: keep both.',
   '2. Start the workflow: `/conport:epic {"epic": 7, "project": "prk7m2qx9d", "plan": ".superpowers/plans/doc-<M>.md"}`.',
   '3. When it ends, tell the person its outcome as the run printed it — `EPIC_CLOSED`, `DONE_EPIC_OPEN` or `DONE_WITH_UNRESOLVED_CRITICALS` — with the tasks done, failed and skipped and the findings left, and that pushing `main` and the release are theirs.'
 ]
@@ -381,7 +381,7 @@ test('the workflow task names /conport:epic with the epic, the project and the p
   const task = epicWorkflowTask(WORKFLOW)
   assert.match(task, new RegExp(`^Execute epic 7 of the ConPort project ${HANDLE} with the workflow /conport:epic\\.\n`))
   assert.ok(task.includes(`in the repository ${ROOT} on its default branch \`main\``))
-  assert.ok(task.includes(`1. Pull the plan: \`${NPX} plan pull 7 -p ${HANDLE}\`.`))
+  assert.ok(task.includes(`Pull the plan: \`${NPX} plan pull 7 -p ${HANDLE}\`.`))
   assert.ok(
     task.includes(`2. Start the workflow: \`/conport:epic {"epic": 7, "project": "${HANDLE}", "plan": ".superpowers/plans/doc-<M>.md"}\`.`)
   )
@@ -411,6 +411,63 @@ test('the workflow task names neither SDD nor a role and does not forbid a secon
   assert.ok(
     task.includes('When they tell you to run it again, run the same command: the workflow picks up the branches an earlier run left.')
   )
+})
+
+/** The line of step `n` of a text. */
+const stepOf = (text: string, n: number): string => text.split('\n').find((l) => l.startsWith(`${n}. `)) ?? ''
+
+test('every epic task calls init without questions in its first step', () => {
+  const line = 'If you call `init` of ConPort, call it with `questions=false`: this run takes up no questions about the project.'
+  for (const task of TEXTS) {
+    assert.ok(stepOf(task, 1).startsWith(`1. ${line} `), stepOf(task, 1))
+    assert.equal(task.split('questions=false').length - 1, 1)
+  }
+})
+
+test('the SDD task brings the base into a branch of the epic that lags behind it before a task branch is cut', () => {
+  for (const harness of ['claude', 'codex']) {
+    const where = stepOf(epicTask({ ...SDD, harness }), 4)
+    assert.ok(
+      where.endsWith(
+        'If `epic-7` does not hold the tip of `main` (`git merge-base --is-ancestor main epic-7` fails), ' +
+          'bring `main` into it in this working copy before any branch `task-<id>` is cut: `git merge --ff-only main`, ' +
+          'and when that refuses because `epic-7` has commits of its own, `git merge main`; a conflict of that merge is a question to the person.'
+      ),
+      where
+    )
+    // The epic is taken first, then the base is brought in.
+    assert.ok(where.indexOf('--status IN_PROGRESS') < where.indexOf('git merge-base'))
+  }
+  // The base and the epic are the ones given.
+  const other = stepOf(epicTask({ ...SDD, epic: 12, base: 'release/1.x' }), 4)
+  assert.ok(other.includes('(`git merge-base --is-ancestor release/1.x epic-12` fails)'), other)
+  assert.ok(other.includes('`git merge --ff-only release/1.x`, and when that refuses because `epic-12` has commits of its own, `git merge release/1.x`;'))
+})
+
+test('the SDD task puts the working copy of a task beside the working copy of the epic', () => {
+  for (const harness of ['claude', 'codex']) {
+    const order = stepOf(epicTask({ ...SDD, harness }), 5)
+    assert.ok(order.endsWith('The working copy of a task is the folder /work/task-<id>, beside /work/app-epic-7, never inside it.'), order)
+  }
+  const cases: Array<[string, string]> = [
+    ['/x/y/epic-12', '/x/y/task-<id>'],
+    ['/x/y/epic-12/', '/x/y/task-<id>'],
+    ['/epic-12', '/task-<id>']
+  ]
+  for (const [worktree, folder] of cases) {
+    const order = stepOf(epicTask({ ...SDD, worktree }), 5)
+    assert.ok(order.includes(`The working copy of a task is the folder ${folder}, beside ${worktree}, never inside it.`), order)
+  }
+})
+
+test('the SDD task takes a task into work before its implementer is dispatched', () => {
+  const take = `Take the task before dispatching its implementer: \`${NPX} api tasks update --task_id <id> --status IN_PROGRESS --project ${HANDLE}\`.`
+  for (const harness of ['claude', 'codex']) {
+    const one = stepOf(epicTask({ ...SDD, harness }), 6)
+    assert.ok(one.includes(take), one)
+    assert.ok(one.indexOf('Write the brief') < one.indexOf(take))
+    assert.ok(one.indexOf(take) < one.indexOf('Dispatch the implementer'))
+  }
 })
 
 test('the first text is the text of the spec', () => {
