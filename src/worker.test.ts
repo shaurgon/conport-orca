@@ -900,7 +900,7 @@ test('review a task asks the agent for a verdict in the journal', async () => {
 /** The task list with task 46 in progress after a review that asked for changes. */
 const SENT_BACK: TaskList = {
   ...TASK_LIST,
-  tasks: [...TASK_LIST.tasks, { id: 46, title: 'Trim the export', status: 'IN_PROGRESS', priority: 3, changes_requested: true }]
+  tasks: [...TASK_LIST.tasks, { id: 46, title: 'Trim the export', kind: 'task', status: 'IN_PROGRESS', priority: 3, changes_requested: true }]
 }
 
 test('fix a task the review sent back: its branch, the latest review, a fix entry', async () => {

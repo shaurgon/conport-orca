@@ -59,7 +59,7 @@ const FIRST_TEXT = [
   '- Run every ConPort command exactly as written here, with the CLI release and the project it names. Never print or pass the ConPort API key: the CLI reads it itself. The ConPort MCP tools do the same steps as well, with project="prk7m2qx9d".',
   '- Run no checks before the first task: the checks of the repository run inside the tasks and after the merges, where the steps below name them.',
   '- Decide an ambiguity by the spec and record the decision in the journal of the task.',
-  "- In steps 8-10 too, ordinary tasks added after the plan past max(3, floor(0.3 × plan tasks)), polish too, go to the epic `Tails of release <title of the release milestone>`: look for it before filing one. It is filed with priority 1, and only when the open milestone right after the release is a release milestone itself: when it is a standing list (the waiting milestone, the backlog without a date) or there is none, ask the person which milestone the tails go to. Waiting work goes to the waiting milestone. A defect never counts: a review's Critical or Important, a gap hunt's Blocker or Should-fix, a confirmed behaviour defect.",
+  "- In steps 8-10 too, read get_task(<epic>) for epic_progress: growth_ceiling is the server ceiling, null means no ceiling; use ordinary_added to read the remaining room, never count locally. On epic_growth_ceiling execute the ordered calls from suggestions (plan import prints them); refused ordinary work and polish go to the epic `Tails of release <title of the release milestone>`: look for it before filing one. It is filed with priority 1. Inspect the next open milestone after the release: if it is a release, find the oldest open tails epic with the exact title in that milestone, or create it there; otherwise find or create it without a milestone, file the work, and ask the person which milestone it goes to. When suggestions include ask_user_milestone, the target tails epic has no milestone, whether found or created: ask the person where it belongs. Waiting work goes to the waiting milestone. A defect (kind='bug') never counts: a review's Critical or Important, a gap hunt's Blocker or Should-fix, a confirmed behaviour defect.",
   '- An epic does not bump a version: leave every version as `main` has it and write the changes into the changelog of the unit under `## Unreleased`; the version of every changed unit is bumped once, at the release step, after every epic of the release milestone has merged.',
   "- Stop and ask the person only for: an operation that cannot be undone; a merge conflict you cannot resolve without guessing; a task whose review has not approved after three rounds; a Note of the gap hunt only the person can answer; which milestone the tails epic goes to, when the rule above says to ask; a step that cannot be done as it is written here — a task that is BLOCKED, a dependency that can never close, a subagent type named under \"Roles\" that is not found, a refusal of the CLI or of its key, checks that stay red after a merge and its fix round.",
   "- When you ask, say what stopped you and the one thing you need, then end your turn and wait for the person's word. Do not go on to another task while a question that holds the epic is open.",
@@ -94,7 +94,7 @@ const FIRST_TEXT = [
   '7. Merge. Merge `task-<id>` into `epic-7` in this working copy, one task at a time, and run there the checks the plan names in its Global Constraints. Red checks or a conflict go back to the implementer of that task as one fix round: the task is in REVIEW, where a `fix` entry is not accepted, so the reviewer of that task first writes a `review` entry with the verdict `changes_requested` and the output of the checks or of the merge, and the fix round follows as in step 6. Then close the task: `npx -y conport@<V> api tasks update --task_id <id> --status DONE --resolution "<what was done, the merge commit>" --project prk7m2qx9d`, and remove its working copy.',
   '8. Gap hunt, once, when every task of the epic is DONE or CANCELLED: the whole branch `epic-7` against the spec, with the goal as the spec states it. Every Blocker and Should-fix becomes a task of the epic; a Note is ordinary work: a task of the epic within the ceiling of the Rules, of the tails epic past it. A Note only the person can answer is asked of the person at once, and the answer becomes the task.',
   '9. Final review, once, after the tasks of the gap hunt are merged: the whole branch against the spec. Every Critical and Important becomes a task of the epic; a Minor is ordinary work: a task of the epic within the ceiling of the Rules, of the tails epic past it. There is no second final review.',
-  "10. A finding that becomes a task of this epic is a new section of the plan, as the overlay's step \"Editing the plan during the work\" says: pull, add the section with the next free number, `plan import`, pull again. Mark it: a defect's **Goal:** starts with `The gap: `; the title of ordinary work, with `Review minors left on ` or `Note answer: `. It then runs through steps 6 and 7 once.",
+  "10. A finding that becomes a task of this epic is a new section of the plan, as the overlay's step \"Editing the plan during the work\" says: pull, add the section with the next free number, `plan import`, pull again. File a defect as kind='bug': label its plan section `kind: bug`; ordinary work uses kind='task'. It then runs through steps 6 and 7 once.",
   '11. The section "ConPort finish" at the end of the pulled plan: run the skill superpowers-conport in `finish` mode on the pulled plan file and do what it prescribes until it says READY — except the six things named under "Never".',
   '12. On READY, log a progress entry titled exactly `Epic task-7 is ready to merge`, linked to task 7. Its body: the head commit of `epic-7`, and the numbers of the tasks made from the findings of the gap hunt and of the final review. Then tell the person the same: the branch, its head commit, those task numbers, and that merging into `main`, the release and closing the epic are theirs.'
 ]
@@ -454,11 +454,10 @@ test('every finding of the gap hunt and of the final review becomes a task, and 
       stepOf(task, 10)
     )
     assert.ok(stepOf(task, 10).endsWith('It then runs through steps 6 and 7 once.'))
-    // The section carries the words a later run of the workflow tells a defect from ordinary work by:
-    // a defect's Goal is the first line of its task's description, ordinary work is known by its title.
+    // A defect uses the plan section's bug kind; prose never determines its kind.
     assert.ok(
       stepOf(task, 10).includes(
-        "Mark it: a defect's **Goal:** starts with `The gap: `; the title of ordinary work, with `Review minors left on ` or `Note answer: `."
+        "File a defect as kind='bug': label its plan section `kind: bug`; ordinary work uses kind='task'."
       ),
       stepOf(task, 10)
     )
@@ -481,16 +480,18 @@ test('every finding of the gap hunt and of the final review becomes a task, and 
     // The growth rule bounds the findings of steps 8-10 and sends what is past it to the one tails epic of the release.
     const growth = task.split('\n').find((l) => l.startsWith('- In steps 8-10 too, ')) ?? ''
     for (const part of [
-      'ordinary tasks added after the plan past max(3, floor(0.3 × plan tasks))',
-      'polish too',
+      'read get_task(<epic>) for epic_progress',
+      'null means no ceiling',
+      'never count locally',
+      'On epic_growth_ceiling execute the ordered calls from suggestions (plan import prints them)',
       // One title, looked up before one is filed, so the lead session and the epic workflow never start two.
       'go to the epic `Tails of release <title of the release milestone>`: look for it before filing one.',
-      // Filed with priority 1, and only into a release milestone: the condition of the skills, word for word.
-      'It is filed with priority 1, and only when the open milestone right after the release is a release milestone itself: when it is a standing list (the waiting milestone, the backlog without a date) or there is none, ask the person which milestone the tails go to.',
+      // Filed with priority 1 in the next release or without a milestone: the shared rule.
+      'It is filed with priority 1. Inspect the next open milestone after the release: if it is a release, find the oldest open tails epic with the exact title in that milestone, or create it there; otherwise find or create it without a milestone, file the work, and ask the person which milestone it goes to.',
       // Waiting work has its own place.
-      'Waiting work goes to the waiting milestone.',
+      'When suggestions include ask_user_milestone, the target tails epic has no milestone, whether found or created: ask the person where it belongs. Waiting work goes to the waiting milestone.',
       // Every defect is exempt, not only a behaviour defect.
-      "A defect never counts: a review's Critical or Important, a gap hunt's Blocker or Should-fix, a confirmed behaviour defect."
+      "A defect (kind='bug') never counts: a review's Critical or Important, a gap hunt's Blocker or Should-fix, a confirmed behaviour defect."
     ]) {
       assert.ok(growth.includes(part), part)
     }
@@ -614,4 +615,10 @@ test('the first text stays under 11000 characters, and under 11500 with every na
   })
   assert.ok(longest.length < 11500, `${longest.length} characters`)
   assert.ok(epicTask(SDD).length < 11000, `${epicTask(SDD).length} characters`)
+})
+
+test('the epic task names the bug kind in its ceiling rule', () => {
+  for (const task of TEXTS.slice(0, 2)) {
+    assert.ok(task.includes("A defect (kind='bug') never counts"))
+  }
 })

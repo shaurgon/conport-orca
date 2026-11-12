@@ -55,6 +55,7 @@ import type {
 import {
   AGENT_MISSING_ACTION,
   BRANCHES_NOTE,
+  BUG_LABEL,
   COPY_NOTE,
   epicState,
   FIXER_NOTE,
@@ -890,11 +891,12 @@ const HAND_SHEETS: Record<HandMode, { title: string; who: string }> = {
 function taskRow(task: OutsideTask) {
   const key = `task:${task.id}`
   const title = `${task.id} · ${task.title}`
+  const description = task.kind === 'bug' ? `${BUG_LABEL} · ${taskState(task)}` : taskState(task)
   const mode = handMode(task)
-  if (mode === null) return <ListItem key={key} title={title} description={taskState(task)} icon="agent" />
+  if (mode === null) return <ListItem key={key} title={title} description={description} icon="agent" />
   const action = HAND_ACTIONS[mode]
   return (
-    <ListItem key={key} title={title} description={taskState(task)} icon={action.icon}>
+    <ListItem key={key} title={title} description={description} icon={action.icon}>
       <Row>
         <Button
           key={`${action.key}:${task.id}`}
@@ -921,7 +923,7 @@ function TasksTab() {
   const groups: Array<[string, OutsideTask[]]> = [
     ['Ждут проверки', outside.data.filter((t) => t.status === 'REVIEW')],
     ['В работе', outside.data.filter((t) => t.status === 'IN_PROGRESS')],
-    ['К выполнению · по приоритету', outside.data.filter((t) => t.status === 'TODO').sort((a, b) => a.priority - b.priority)]
+    ['К выполнению', outside.data.filter((t) => t.status === 'TODO')]
   ]
   return (
     <Stack gap="md">

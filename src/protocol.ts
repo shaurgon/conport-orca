@@ -73,6 +73,7 @@ export type EpicSummary = EpicList['epics'][number]
 /** A task of the project outside its epics, as `conport task list` names it. */
 export interface OutsideTask {
   id: number
+  kind: 'task' | 'bug'
   title: string
   status: 'TODO' | 'IN_PROGRESS' | 'REVIEW'
   /** 1 critical … 5 idle. */
@@ -81,7 +82,7 @@ export interface OutsideTask {
   changes_requested: boolean
 }
 
-/** `conport task list --json`: the open tasks of the project outside its epics, by priority. */
+/** `conport task list --json`: the open tasks of the project outside its epics, in server order. */
 export interface TaskList {
   /** The handle of the project. */
   project: string

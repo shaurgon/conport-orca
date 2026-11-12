@@ -68,15 +68,15 @@ export const EPIC_WITHOUT_PLAN: EpicList = {
 
 export const EMPTY_LIST: EpicList = { project: HANDLE, epics: [] }
 
-/** The tasks of the project outside its epics, by priority, as `conport task list` prints them. */
+/** The tasks of the project outside its epics, in server order, as `conport task list` prints them. */
 export const TASK_LIST: TaskList = {
   project: HANDLE,
   tasks: [
-    { id: 41, title: 'Rotate the backup key', status: 'TODO', priority: 2, changes_requested: false },
-    { id: 42, title: 'Compare the metrics after the release', status: 'REVIEW', priority: 3, changes_requested: false },
-    { id: 43, title: 'Check the backups', status: 'IN_PROGRESS', priority: 3, changes_requested: false },
-    { id: 44, title: 'Simplify the search answer', status: 'TODO', priority: 3, changes_requested: false },
-    { id: 45, title: 'Hints on an empty search', status: 'TODO', priority: 4, changes_requested: false }
+    { id: 41, title: 'Rotate the backup key', kind: 'task', status: 'TODO', priority: 2, changes_requested: false },
+    { id: 42, title: 'Compare the metrics after the release', kind: 'task', status: 'REVIEW', priority: 3, changes_requested: false },
+    { id: 43, title: 'Check the backups', kind: 'task', status: 'IN_PROGRESS', priority: 3, changes_requested: false },
+    { id: 44, title: 'Simplify the search answer', kind: 'task', status: 'TODO', priority: 3, changes_requested: false },
+    { id: 45, title: 'Hints on an empty search', kind: 'task', status: 'TODO', priority: 4, changes_requested: false }
   ]
 }
 

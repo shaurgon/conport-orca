@@ -2,7 +2,7 @@
 import type { HandMode, OutsideTask, Refusal, Result, Roles } from './protocol'
 
 /** The conport CLI release the panel runs: kept equal to the CLI of the same repository. */
-export const CLI_VERSION = '0.7.4'
+export const CLI_VERSION = '0.8.0'
 
 /** How the CLI is started, as the person would type it. */
 export const CONPORT = ['npx', '-y', `conport@${CLI_VERSION}`]
@@ -351,9 +351,9 @@ export function epicTask({ epic, project, worktree, base, harness, roles }: Epic
     'Final review, once, after the tasks of the gap hunt are merged: the whole branch against the spec. ' +
       'Every Critical and Important becomes a task of the epic; a Minor is ordinary work: a task of the epic within the ceiling of the Rules, of the tails epic past it. ' +
       'There is no second final review.',
-    // The marks are the words a later run of the epic workflow tells a defect from ordinary work by.
+    // The plan section kind identifies a defect across every surface.
     `A finding that becomes a task of this epic is a new section of the plan, ${newSection} ` +
-      "Mark it: a defect's **Goal:** starts with `The gap: `; the title of ordinary work, with `Review minors left on ` or `Note answer: `. " +
+      "File a defect as kind='bug': label its plan section `kind: bug`; ordinary work uses kind='task'. " +
       'It then runs through steps 6 and 7 once.',
     finish,
     `On READY, log a progress entry titled exactly \`${ready}\`, linked to task ${epic}${readyEntry}. ` +
@@ -372,11 +372,11 @@ export function epicTask({ epic, project, worktree, base, harness, roles }: Epic
     `${EPIC_COMMANDS} The ConPort MCP tools do the same steps as well, with project="${project}".`,
     '- Run no checks before the first task: the checks of the repository run inside the tasks and after the merges, where the steps below name them.',
     '- Decide an ambiguity by the spec and record the decision in the journal of the task.',
-    '- In steps 8-10 too, ordinary tasks added after the plan past max(3, floor(0.3 × plan tasks)), polish too, ' +
+    '- In steps 8-10 too, read get_task(<epic>) for epic_progress: growth_ceiling is the server ceiling, null means no ceiling; use ordinary_added to read the remaining room, never count locally. On epic_growth_ceiling execute the ordered calls from suggestions (plan import prints them); refused ordinary work and polish ' +
       `go to the epic \`${TAILS_TITLE}\`: look for it before filing one. ` +
-      'It is filed with priority 1, and only when the open milestone right after the release is a release milestone itself: when it is a standing list (the waiting milestone, the backlog without a date) or there is none, ask the person which milestone the tails go to. ' +
-      'Waiting work goes to the waiting milestone. ' +
-      "A defect never counts: a review's Critical or Important, a gap hunt's Blocker or Should-fix, a confirmed behaviour defect.",
+      'It is filed with priority 1. Inspect the next open milestone after the release: if it is a release, find the oldest open tails epic with the exact title in that milestone, or create it there; otherwise find or create it without a milestone, file the work, and ask the person which milestone it goes to. ' +
+      'When suggestions include ask_user_milestone, the target tails epic has no milestone, whether found or created: ask the person where it belongs. Waiting work goes to the waiting milestone. ' +
+      "A defect (kind='bug') never counts: a review's Critical or Important, a gap hunt's Blocker or Should-fix, a confirmed behaviour defect.",
     // The rule of the release (the conport-roadmap skill): the executor of the epic reads no project instructions.
     `- An epic does not bump a version: leave every version as \`${base}\` has it and write the changes into the changelog of the unit under \`## Unreleased\`; ` +
       'the version of every changed unit is bumped once, at the release step, after every epic of the release milestone has merged.',

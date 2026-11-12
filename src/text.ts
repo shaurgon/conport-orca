@@ -204,6 +204,9 @@ export const PRIORITY: Record<number, string> = {
   5: 'Фоновый'
 }
 
+/** The marker for a behaviour defect on its task row. */
+export const BUG_LABEL = 'Bug'
+
 /** A task outside the epics on its row: its priority while it waits, else its stage. */
 export function taskState(task: OutsideTask): string {
   if (task.status === 'REVIEW') return 'На проверке'

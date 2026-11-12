@@ -1482,23 +1482,39 @@ test('choosing another project closes the sheet', async () => {
   assert.equal(view.find({ testId: 'sheet' }), null)
 })
 
-test('the tasks tab groups review, in progress and todo by priority', async () => {
-  // Out of order as given: the panel lists the todo ones by priority all the same.
+test('the tasks tab marks a bug', async () => {
+  const tasks = TASK_LIST.tasks.map((task) => ({ ...task, kind: task.id <= 43 ? 'bug' : 'task' }))
+  const { host } = stub({ 'tasks.list': () => ok(tasks) })
+  view = await mount(panel, { host })
+  await tab(view, 'tasks')
+  assert.deepEqual(itemsIn(view, 'Ждут проверки'), [
+    ['42 · Compare the metrics after the release', 'Bug · На проверке']
+  ])
+  assert.deepEqual(itemsIn(view, 'В работе'), [['43 · Check the backups', 'Bug · В работе']])
+  assert.deepEqual(itemsIn(view, 'К выполнению'), [
+    ['41 · Rotate the backup key', 'Bug · Высокий · не начата'],
+    ['44 · Simplify the search answer', 'Средний · не начата'],
+    ['45 · Hints on an empty search', 'Низкий · не начата']
+  ])
+})
+
+test('the tasks tab keeps the order of the list', async () => {
+  // Server order takes precedence over the displayed priority.
   const tasks = [
-    { id: 51, title: 'Background chore', status: 'TODO', priority: 5, changes_requested: false },
-    { id: 52, title: 'Fix the outage', status: 'TODO', priority: 1, changes_requested: false },
-    { id: 53, title: 'Under review', status: 'REVIEW', priority: 4, changes_requested: false },
-    { id: 54, title: 'Being done', status: 'IN_PROGRESS', priority: 2, changes_requested: false },
-    { id: 55, title: 'Rotate the key', status: 'TODO', priority: 2, changes_requested: false },
-    { id: 56, title: 'Simplify', status: 'TODO', priority: 3, changes_requested: false },
-    { id: 57, title: 'Hints', status: 'TODO', priority: 4, changes_requested: false },
-    { id: 58, title: 'Back from review', status: 'IN_PROGRESS', priority: 3, changes_requested: true }
+    { id: 51, title: 'Background chore', kind: 'task', status: 'TODO', priority: 5, changes_requested: false },
+    { id: 52, title: 'Fix the outage', kind: 'task', status: 'TODO', priority: 1, changes_requested: false },
+    { id: 53, title: 'Under review', kind: 'task', status: 'REVIEW', priority: 4, changes_requested: false },
+    { id: 54, title: 'Being done', kind: 'task', status: 'IN_PROGRESS', priority: 2, changes_requested: false },
+    { id: 55, title: 'Rotate the key', kind: 'task', status: 'TODO', priority: 2, changes_requested: false },
+    { id: 56, title: 'Simplify', kind: 'task', status: 'TODO', priority: 3, changes_requested: false },
+    { id: 57, title: 'Hints', kind: 'task', status: 'TODO', priority: 4, changes_requested: false },
+    { id: 58, title: 'Back from review', kind: 'task', status: 'IN_PROGRESS', priority: 3, changes_requested: true }
   ]
   const { host } = stub({ 'tasks.list': () => ok(tasks) })
   view = await mount(panel, { host })
   assert.equal(tabsOf(view)[2], 'Задачи · 8')
   await tab(view, 'tasks')
-  assert.deepEqual(groupsOf(view), ['Ждут проверки', 'В работе', 'К выполнению · по приоритету'])
+  assert.deepEqual(groupsOf(view), ['Ждут проверки', 'В работе', 'К выполнению'])
   const rows = (label: string) => itemsIn(view as TestPanel, label)
   assert.deepEqual(rows('Ждут проверки'), [['53 · Under review', 'На проверке']])
   assert.deepEqual(rows('В работе'), [
@@ -1508,12 +1524,12 @@ test('the tasks tab groups review, in progress and todo by priority', async () =
   // A task the review sent back is fixed by an agent; one an agent is at is its own.
   assert.equal(view.find({ testId: 'fix:58' })?.text, 'Исправить')
   assert.equal(view.find({ testId: 'fix:54' }), null)
-  assert.deepEqual(rows('К выполнению · по приоритету'), [
+  assert.deepEqual(rows('К выполнению'), [
+    ['51 · Background chore', 'Фоновый · не начата'],
     ['52 · Fix the outage', 'Критический · не начата'],
     ['55 · Rotate the key', 'Высокий · не начата'],
     ['56 · Simplify', 'Средний · не начата'],
-    ['57 · Hints', 'Низкий · не начата'],
-    ['51 · Background chore', 'Фоновый · не начата']
+    ['57 · Hints', 'Низкий · не начата']
   ])
   // Review asks for a check, todo for an agent; a task in progress is the agent's own.
   assert.equal(view.find({ testId: 'review:53' })?.text, 'Проверить')
