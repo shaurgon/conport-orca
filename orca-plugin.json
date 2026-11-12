@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "conport-orca",
   "name": "ConPort Epics",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Controls ConPort projects from Orca: the epics of a project by milestone, the start of an epic in a terminal of the chosen harness with a subagent type per role, an agent to prepare an epic without a spec or plan, and the tasks outside the epics handed to an agent to do or to review.",
   "license": "MIT",
   "engines": {
