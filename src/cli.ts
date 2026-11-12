@@ -2,7 +2,7 @@
 import type { HandMode, OutsideTask, Refusal, Result, Roles } from './protocol'
 
 /** The conport CLI release the panel runs: kept equal to the CLI of the same repository. */
-export const CLI_VERSION = '0.7.0'
+export const CLI_VERSION = '0.7.3'
 
 /** How the CLI is started, as the person would type it. */
 export const CONPORT = ['npx', '-y', `conport@${CLI_VERSION}`]
@@ -343,14 +343,15 @@ export function epicTask({ epic, project, worktree, base, harness, roles }: Epic
       `${sendBack}, and the fix round follows as in step 6. ` +
       `Then close the task: ${api('tasks update --task_id <id> --status DONE --resolution "<what was done, the merge commit>"')}, and remove its working copy.`,
     `Gap hunt, once, when every task of the epic is DONE or CANCELLED: the whole branch ${branch} against the spec, with the goal as the spec states it. ` +
-      'A Blocker becomes a task of the epic; a Should-fix and a Note are kept for step 12.',
+      'Every finding — a Blocker, a Should-fix and a Note — becomes a task of the epic. ' +
+      'A Note only the person can answer is asked of the person at once, and the answer becomes the task.',
     'Final review, once, after the tasks of the gap hunt are merged: the whole branch against the spec. ' +
-      'A Critical or Important finding becomes a task of the epic; a Minor is kept for step 12. There is no second final review.',
+      'Every finding — a Critical, an Important and a Minor — becomes a task of the epic. There is no second final review.',
     `A finding that becomes a task is a new section of the plan, ${newSection} It then runs through steps 6 and 7 once.`,
     finish,
     `On READY, log a progress entry titled exactly \`${ready}\`, linked to task ${epic}${readyEntry}. ` +
-      `Its body: the head commit of ${branch}, and every finding left open — each Should-fix and Note of the gap hunt and each Minor of the final review, one line each. ` +
-      `Then tell the person the same: the branch, its head commit, the findings left, and that merging into \`${base}\`, the release and closing the epic are theirs.`
+      `Its body: the head commit of ${branch}, and the numbers of the tasks made from the findings of the gap hunt and of the final review. ` +
+      `Then tell the person the same: the branch, its head commit, those task numbers, and that merging into \`${base}\`, the release and closing the epic are theirs.`
   ]
 
   return [
@@ -366,6 +367,7 @@ export function epicTask({ epic, project, worktree, base, harness, roles }: Epic
     '- Decide an ambiguity by the spec and record the decision in the journal of the task.',
     '- Stop and ask the person only for: an operation that cannot be undone; a merge conflict you cannot resolve without guessing; ' +
       "a task whose review has not approved after three rounds; the epic grown by more than 30% of the plan's tasks; " +
+      'a Note of the gap hunt only the person can answer; ' +
       'a step that cannot be done as it is written here — a task that is BLOCKED, a dependency that can never close, ' +
       'a subagent type named under "Roles" that is not found, a refusal of the CLI or of its key, checks that stay red after a merge and its fix round.',
     "- When you ask, say what stopped you and the one thing you need, then end your turn and wait for the person's word. " +
@@ -392,12 +394,31 @@ export function epicTask({ epic, project, worktree, base, harness, roles }: Epic
  * does the rest itself, so the task names no role and no check; a second run is the same command.
  */
 export function epicWorkflowTask({ epic, project, root, base }: EpicWorkflowInput): string {
-  const pull = `\`npx -y conport@${CLI_VERSION} plan pull ${epic} -p ${project}\``
+  const npx = `npx -y conport@${CLI_VERSION}`
+  const pull = `\`${npx} plan pull ${epic} -p ${project}\``
+  const { tail } = QUOTES
   const steps = [
     `${INIT_QUIET} ${pullPlan(pull)}`,
     `Start the workflow: \`/conport:epic {"epic": ${epic}, "project": "${project}", "plan": "${PLAN_FILE}"}\`.`,
     'When it ends, tell the person its outcome as the run printed it — `EPIC_CLOSED`, `DONE_EPIC_OPEN` or `DONE_WITH_UNRESOLVED_CRITICALS` — ' +
-      `with the tasks done, failed and skipped and the findings left, and that pushing \`${base}\` and the release are theirs.`
+      `with the tasks done, failed and skipped and the numbers of the tasks made from findings, and that pushing \`${base}\` and the release are theirs.`,
+    // A held finding waits for the person: its answer becomes a section of the plan, which a re-run executes.
+    'Every finding the run held for the person — an entry of `findings` in its ledger with `held` — carries its `question`: ' +
+      'ask the person each question at once, one at a time, and wait for the answer. ' +
+      `An answer that keeps the work makes the finding a section of the plan: pull the plan (${pull}), ` +
+      `add a section with the next free number above the line \`${tail.marker}\`, with the title of the held task, ` +
+      'its marker `<!-- conport-task: <id> -->` under the heading and the answer as its requirement, ' +
+      `import the file (\`${npx} plan import ${PLAN_FILE} -p ${project}\`), pull again. ` +
+      'An answer that drops the work cancels that task: ' +
+      `\`${npx} api tasks update --task_id <id> --status CANCELLED --resolution "<the answer>" --project ${project}\`.`,
+    // The run filed it already, at its accounting: the section binds to that task, never a second one.
+    'Every entry of `unfiled_findings` in its ledger — its `title`, `brief` and `question` — is a finding the run filed ' +
+      'at its accounting as a child of the epic with that title: find that task among the children of the epic ' +
+      `(\`${npx} api tasks list --parent_task_id ${epic} --status ALL --include_snoozed true --limit 200 --project ${project}\`). ` +
+      'Bind it to a section of the plan as in step 4 — its marker under the heading, `brief` as its requirement; ' +
+      'an entry with a `question` is asked of the person first, and the answer goes with `brief` into the section or cancels the task. ' +
+      'No such task — the accounting could not file it: add the section the same way without a marker, and the import creates its task.',
+    'Tell the person the numbers of the tasks steps 4 and 5 made or kept; when they tell you to run the workflow again, the same command runs them.'
   ]
   return [
     `Execute epic ${epic} of the ConPort project ${project} with the workflow /conport:epic.`,
