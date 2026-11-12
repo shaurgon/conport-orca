@@ -59,7 +59,9 @@ const FIRST_TEXT = [
   '- Run every ConPort command exactly as written here, with the CLI release and the project it names. Never print or pass the ConPort API key: the CLI reads it itself. The ConPort MCP tools do the same steps as well, with project="prk7m2qx9d".',
   '- Run no checks before the first task: the checks of the repository run inside the tasks and after the merges, where the steps below name them.',
   '- Decide an ambiguity by the spec and record the decision in the journal of the task.',
-  "- Stop and ask the person only for: an operation that cannot be undone; a merge conflict you cannot resolve without guessing; a task whose review has not approved after three rounds; the epic grown by more than 30% of the plan's tasks; a Note of the gap hunt only the person can answer; a step that cannot be done as it is written here — a task that is BLOCKED, a dependency that can never close, a subagent type named under \"Roles\" that is not found, a refusal of the CLI or of its key, checks that stay red after a merge and its fix round.",
+  "- In steps 8-10 too, ordinary tasks added after the plan past max(3, floor(0.3 × plan tasks)), polish too, go to the epic `Tails of release <title of the release milestone>`: look for it before filing one. It is filed with priority 1, and only when the open milestone right after the release is a release milestone itself: when it is a standing list (the waiting milestone, the backlog without a date) or there is none, ask the person which milestone the tails go to. Waiting work goes to the waiting milestone. A defect never counts: a review's Critical or Important, a gap hunt's Blocker or Should-fix, a confirmed behaviour defect.",
+  '- An epic does not bump a version: leave every version as `main` has it and write the changes into the changelog of the unit under `## Unreleased`; the version of every changed unit is bumped once, at the release step, after every epic of the release milestone has merged.',
+  "- Stop and ask the person only for: an operation that cannot be undone; a merge conflict you cannot resolve without guessing; a task whose review has not approved after three rounds; a Note of the gap hunt only the person can answer; which milestone the tails epic goes to, when the rule above says to ask; a step that cannot be done as it is written here — a task that is BLOCKED, a dependency that can never close, a subagent type named under \"Roles\" that is not found, a refusal of the CLI or of its key, checks that stay red after a merge and its fix round.",
   "- When you ask, say what stopped you and the one thing you need, then end your turn and wait for the person's word. Do not go on to another task while a question that holds the epic is open.",
   '- Every commit message is in the Conventional Commits form and never mentions an AI, an assistant or a model, and carries no Co-Authored-By line.',
   '- This task was given to you once, as the argument you were started with, and is stored nowhere else. When the context is compacted, keep its blocks "Rules", "Never", "Roles" and "Steps" word for word.',
@@ -90,9 +92,9 @@ const FIRST_TEXT = [
   '5. Order. A task is ready when every task it depends on (`blocks`, `requires`) is DONE; among ready tasks the order is the section number of the plan. Run ready tasks in parallel, each in a working copy of its own on the branch `task-<id>` cut from `epic-7`; start the next ones as soon as their dependencies close. The working copy of a task is the folder /work/task-<id>, beside /work/app-epic-7, never inside it.',
   '6. One task. Write the brief into its journal (`kind="brief"`: the full text of its plan section and the context the implementer needs). Take the task before dispatching its implementer: `npx -y conport@<V> api tasks update --task_id <id> --status IN_PROGRESS --project prk7m2qx9d`. Dispatch the implementer with the task number and how to read the journal, nothing else. Its report is the `report` entry. Dispatch the reviewer with the task number and the two commits to compare. Its verdict is the `review` entry: on `changes_requested` the implementer fixes every finding and writes a `fix` entry, then the reviewer reviews again; on `approve` go to step 7.',
   '7. Merge. Merge `task-<id>` into `epic-7` in this working copy, one task at a time, and run there the checks the plan names in its Global Constraints. Red checks or a conflict go back to the implementer of that task as one fix round: the task is in REVIEW, where a `fix` entry is not accepted, so the reviewer of that task first writes a `review` entry with the verdict `changes_requested` and the output of the checks or of the merge, and the fix round follows as in step 6. Then close the task: `npx -y conport@<V> api tasks update --task_id <id> --status DONE --resolution "<what was done, the merge commit>" --project prk7m2qx9d`, and remove its working copy.',
-  '8. Gap hunt, once, when every task of the epic is DONE or CANCELLED: the whole branch `epic-7` against the spec, with the goal as the spec states it. Every finding — a Blocker, a Should-fix and a Note — becomes a task of the epic. A Note only the person can answer is asked of the person at once, and the answer becomes the task.',
-  '9. Final review, once, after the tasks of the gap hunt are merged: the whole branch against the spec. Every finding — a Critical, an Important and a Minor — becomes a task of the epic. There is no second final review.',
-  "10. A finding that becomes a task is a new section of the plan, as the overlay's step \"Editing the plan during the work\" says: pull, add the section with the next free number, `plan import`, pull again. It then runs through steps 6 and 7 once.",
+  '8. Gap hunt, once, when every task of the epic is DONE or CANCELLED: the whole branch `epic-7` against the spec, with the goal as the spec states it. Every Blocker and Should-fix becomes a task of the epic; a Note is ordinary work: a task of the epic within the ceiling of the Rules, of the tails epic past it. A Note only the person can answer is asked of the person at once, and the answer becomes the task.',
+  '9. Final review, once, after the tasks of the gap hunt are merged: the whole branch against the spec. Every Critical and Important becomes a task of the epic; a Minor is ordinary work: a task of the epic within the ceiling of the Rules, of the tails epic past it. There is no second final review.',
+  "10. A finding that becomes a task of this epic is a new section of the plan, as the overlay's step \"Editing the plan during the work\" says: pull, add the section with the next free number, `plan import`, pull again. Mark it: a defect's **Goal:** starts with `The gap: `; the title of ordinary work, with `Review minors left on ` or `Note answer: `. It then runs through steps 6 and 7 once.",
   '11. The section "ConPort finish" at the end of the pulled plan: run the skill superpowers-conport in `finish` mode on the pulled plan file and do what it prescribes until it says READY — except the six things named under "Never".',
   '12. On READY, log a progress entry titled exactly `Epic task-7 is ready to merge`, linked to task 7. Its body: the head commit of `epic-7`, and the numbers of the tasks made from the findings of the gap hunt and of the final review. Then tell the person the same: the branch, its head commit, those task numbers, and that merging into `main`, the release and closing the epic are theirs.'
 ]
@@ -115,9 +117,9 @@ const THIRD_TEXT = [
   '1. If you call `init` of ConPort, call it with `questions=false`: this run takes up no questions about the project. Pull the plan: `npx -y conport@<V> plan pull 7 -p prk7m2qx9d`. It writes `.superpowers/plans/doc-<M>.md` and a `.conport.json` beside it: keep both.',
   '2. Start the workflow: `/conport:epic {"epic": 7, "project": "prk7m2qx9d", "plan": ".superpowers/plans/doc-<M>.md"}`.',
   '3. When it ends, tell the person its outcome as the run printed it — `EPIC_CLOSED`, `DONE_EPIC_OPEN` or `DONE_WITH_UNRESOLVED_CRITICALS` — with the tasks done, failed and skipped and the numbers of the tasks made from findings, and that pushing `main` and the release are theirs.',
-  '4. Every finding the run held for the person — an entry of `findings` in its ledger with `held` — carries its `question`: ask the person each question at once, one at a time, and wait for the answer. An answer that keeps the work makes the finding a section of the plan: pull the plan (`npx -y conport@<V> plan pull 7 -p prk7m2qx9d`), add a section with the next free number above the line `<!-- conport-pull-tail -->`, with the title of the held task, its marker `<!-- conport-task: <id> -->` under the heading and the answer as its requirement, import the file (`npx -y conport@<V> plan import .superpowers/plans/doc-<M>.md -p prk7m2qx9d`), pull again. An answer that drops the work cancels that task: `npx -y conport@<V> api tasks update --task_id <id> --status CANCELLED --resolution "<the answer>" --project prk7m2qx9d`.',
-  '5. Every entry of `unfiled_findings` in its ledger — its `title`, `brief` and `question` — is a finding the run filed at its accounting as a child of the epic with that title: find that task among the children of the epic (`npx -y conport@<V> api tasks list --parent_task_id 7 --status ALL --include_snoozed true --limit 200 --project prk7m2qx9d`). Bind it to a section of the plan as in step 4 — its marker under the heading, `brief` as its requirement; an entry with a `question` is asked of the person first, and the answer goes with `brief` into the section or cancels the task. No such task — the accounting could not file it: add the section the same way without a marker, and the import creates its task.',
-  '6. Tell the person the numbers of the tasks steps 4 and 5 made or kept; when they tell you to run the workflow again, the same command runs them.'
+  '4. When its ledger has `questions`, they are what only the person can settle, the findings it held for them among them, and its `questions_action` says what to do with each answer. Ask the person each question at once, one at a time, with its title, and wait for the answer; then do with the answer what `questions_action` says, with the ConPort MCP tools it names and project="prk7m2qx9d". When a question has no task and its title is the title of an entry of `unfiled_findings`, its task is the one step 5 finds: the answer goes to that task, and only when step 5 finds none does it get a new child.',
+  '5. Every entry of `unfiled_findings` in its ledger — its `title`, `brief` and `question` — is a finding the run filed at its accounting as a child of the epic with that title: find that task among the children of the epic (`npx -y conport@<V> api tasks list --parent_task_id 7 --status ALL --include_snoozed true --limit 200 --project prk7m2qx9d`). An entry with a `question` is settled in step 4. An entry without one is bound to a section of the plan: pull the plan (`npx -y conport@<V> plan pull 7 -p prk7m2qx9d`), add a section with the next free number above the line `<!-- conport-pull-tail -->`, with its title, the marker `<!-- conport-task: <id> -->` of that task under the heading and `brief` as its requirement, import the file (`npx -y conport@<V> plan import .superpowers/plans/doc-<M>.md -p prk7m2qx9d`), pull again. No such task — the accounting could not file it: add the section the same way without a marker, and the import creates its task.',
+  '6. Tell the person the numbers of the tasks steps 4 and 5 made, moved or kept; when they tell you to run the workflow again, the same command runs the sections step 5 added.'
 ]
 
 const spec = (lines: string[]): string => lines.join('\n').replaceAll('<V>', CLI_VERSION)
@@ -262,8 +264,9 @@ test('the SDD task lists the reasons to stop and tells to end the turn', () => {
       'an operation that cannot be undone',
       'a merge conflict you cannot resolve without guessing',
       'a task whose review has not approved after three rounds',
-      "the epic grown by more than 30% of the plan's tasks",
       'a Note of the gap hunt only the person can answer',
+      // The tails epic of the release is filed by itself only into a release milestone; elsewhere the person picks it.
+      'which milestone the tails epic goes to, when the rule above says to ask',
       'a task that is BLOCKED',
       'a dependency that can never close',
       'a subagent type named under "Roles" that is not found',
@@ -278,6 +281,19 @@ test('the SDD task lists the reasons to stop and tells to end the turn', () => {
           'Do not go on to another task while a question that holds the epic is open.'
       )
     )
+  }
+})
+
+// An executor of the epic, Codex included, reads no project instructions: the version rule is in its Rules.
+test('the SDD task tells not to bump a version and to write the changes under Unreleased', () => {
+  for (const [task, base] of [[TEXTS[0] ?? '', 'main'], [TEXTS[1] ?? '', 'main'], [epicTask({ ...SDD, base: 'trunk' }), 'trunk']]) {
+    const rule = task.split('\n').find((l) => l.startsWith('- An epic does not bump a version: ')) ?? ''
+    assert.equal(
+      rule,
+      `- An epic does not bump a version: leave every version as \`${base}\` has it and write the changes into the changelog of the unit under \`## Unreleased\`; ` +
+        'the version of every changed unit is bumped once, at the release step, after every epic of the release milestone has merged.'
+    )
+    assert.ok(block(task, 'Rules').includes(rule), rule)
   }
 })
 
@@ -390,10 +406,10 @@ test('the workflow task names /conport:epic with the epic, the project and the p
     task.includes(`2. Start the workflow: \`/conport:epic {"epic": 7, "project": "${HANDLE}", "plan": ".superpowers/plans/doc-<M>.md"}\`.`)
   )
   assert.deepEqual(conportCommands(task), [
-    `${NPX} plan pull 7 -p ${HANDLE}`, `${NPX} plan pull 7 -p ${HANDLE}`,
-    `${NPX} plan import .superpowers/plans/doc-<M>.md -p ${HANDLE}`,
-    `${NPX} api tasks update --task_id <id> --status CANCELLED --resolution "<the answer>" --project ${HANDLE}`,
-    `${NPX} api tasks list --parent_task_id 7 --status ALL --include_snoozed true --limit 200 --project ${HANDLE}`
+    `${NPX} plan pull 7 -p ${HANDLE}`,
+    `${NPX} api tasks list --parent_task_id 7 --status ALL --include_snoozed true --limit 200 --project ${HANDLE}`,
+    `${NPX} plan pull 7 -p ${HANDLE}`,
+    `${NPX} plan import .superpowers/plans/doc-<M>.md -p ${HANDLE}`
   ])
   const other = epicWorkflowTask({ epic: 12, project: 'prabcdefgh', root: '/x/y', base: 'trunk' })
   // The CLI release is the one thing the two texts share, and it may carry the digit of the first epic.
@@ -428,40 +444,85 @@ const stepOf = (text: string, n: number): string => text.split('\n').find((l) =>
 test('every finding of the gap hunt and of the final review becomes a task, and the readiness entry names task numbers', () => {
   for (const task of TEXTS.slice(0, 2)) {
     const hunt = stepOf(task, 8)
-    assert.ok(hunt.includes('Every finding — a Blocker, a Should-fix and a Note — becomes a task of the epic.'), hunt)
+    assert.ok(hunt.includes('Every Blocker and Should-fix becomes a task of the epic; a Note is ordinary work: a task of the epic within the ceiling of the Rules, of the tails epic past it.'), hunt)
     assert.ok(hunt.includes('A Note only the person can answer is asked of the person at once, and the answer becomes the task.'), hunt)
-    assert.ok(stepOf(task, 9).includes('Every finding — a Critical, an Important and a Minor — becomes a task of the epic.'))
+    assert.ok(stepOf(task, 9).includes('Every Critical and Important becomes a task of the epic; a Minor is ordinary work: a task of the epic within the ceiling of the Rules, of the tails epic past it.'))
     // A task made from a finding runs the road of every task, before the readiness entry.
-    assert.ok(stepOf(task, 10).startsWith('10. A finding that becomes a task is a new section of the plan, '))
+    // Step 10 makes a section of this epic for a finding steps 8 and 9 keep in it: a defect, or ordinary work within the ceiling.
+    assert.ok(
+      stepOf(task, 10).startsWith('10. A finding that becomes a task of this epic is a new section of the plan, '),
+      stepOf(task, 10)
+    )
     assert.ok(stepOf(task, 10).endsWith('It then runs through steps 6 and 7 once.'))
+    // The section carries the words a later run of the workflow tells a defect from ordinary work by:
+    // a defect's Goal is the first line of its task's description, ordinary work is known by its title.
+    assert.ok(
+      stepOf(task, 10).includes(
+        "Mark it: a defect's **Goal:** starts with `The gap: `; the title of ordinary work, with `Review minors left on ` or `Note answer: `."
+      ),
+      stepOf(task, 10)
+    )
     const ready = stepOf(task, 12)
     assert.ok(ready.includes('the numbers of the tasks made from the findings of the gap hunt and of the final review'), ready)
     assert.ok(ready.includes('those task numbers'), ready)
     // No finding is kept aside for the report.
     assert.doesNotMatch(task, /kept for step 12|every finding left open|the findings left|one line each/)
-    // The growth of the epic still stops the run, and so does a question only the person can answer.
+    // The growth of the epic past its ceiling goes to a tails epic and stops nothing; a question only the person can answer still stops the run.
     const stop = task.split('\n').find((l) => l.startsWith('- Stop and ask the person only for: ')) ?? ''
-    assert.ok(stop.includes("the epic grown by more than 30% of the plan's tasks"))
+    assert.doesNotMatch(stop, /30%|grow|ceiling/)
     assert.ok(stop.includes('a Note of the gap hunt only the person can answer'))
+    // Steps 8 and 9 send a defect into the epic and ordinary work under the ceiling, past it to the tails epic.
+    for (const [n, defects, ordinary] of [[8, 'Every Blocker and Should-fix', 'a Note'], [9, 'Every Critical and Important', 'a Minor']] as const) {
+      const step = stepOf(task, n)
+      assert.ok(step.includes(`${defects} becomes a task of the epic; ${ordinary} is ordinary work: `), step)
+      assert.ok(step.includes('a task of the epic within the ceiling of the Rules, of the tails epic past it.'), step)
+      assert.doesNotMatch(step, /Every finding/)
+    }
+    // The growth rule bounds the findings of steps 8-10 and sends what is past it to the one tails epic of the release.
+    const growth = task.split('\n').find((l) => l.startsWith('- In steps 8-10 too, ')) ?? ''
+    for (const part of [
+      'ordinary tasks added after the plan past max(3, floor(0.3 × plan tasks))',
+      'polish too',
+      // One title, looked up before one is filed, so the lead session and the epic workflow never start two.
+      'go to the epic `Tails of release <title of the release milestone>`: look for it before filing one.',
+      // Filed with priority 1, and only into a release milestone: the condition of the skills, word for word.
+      'It is filed with priority 1, and only when the open milestone right after the release is a release milestone itself: when it is a standing list (the waiting milestone, the backlog without a date) or there is none, ask the person which milestone the tails go to.',
+      // Waiting work has its own place.
+      'Waiting work goes to the waiting milestone.',
+      // Every defect is exempt, not only a behaviour defect.
+      "A defect never counts: a review's Critical or Important, a gap hunt's Blocker or Should-fix, a confirmed behaviour defect."
+    ]) {
+      assert.ok(growth.includes(part), part)
+    }
+    assert.doesNotMatch(growth, /a behaviour defect fix never counts/)
+    assert.doesNotMatch(task, /tails epic of this epic/)
   }
   // The text that starts the workflow reports task numbers too, never the findings left.
   const outcome = stepOf(TEXTS[2] ?? '', 3)
   assert.ok(outcome.includes('the numbers of the tasks made from findings'), outcome)
   assert.doesNotMatch(TEXTS[2] ?? '', /the findings left|findings left open/)
-  // A held finding's question is asked at once, and its answer becomes a section of the plan a re-run executes.
-  const held = stepOf(TEXTS[2] ?? '', 4)
-  assert.ok(held.includes('carries its `question`: ask the person each question at once'), held)
-  assert.ok(held.includes('its marker `<!-- conport-task: <id> -->` under the heading and the answer as its requirement'), held)
-  assert.ok(held.includes(`\`${NPX} plan import .superpowers/plans/doc-<M>.md -p ${HANDLE}\``), held)
-  assert.ok(held.includes('above the line `<!-- conport-pull-tail -->`'), held)
+  // What only the person can settle is the run's `questions`, asked at once and answered the way its `questions_action` says.
+  const asked = stepOf(TEXTS[2] ?? '', 4)
+  assert.ok(asked.startsWith('4. When its ledger has `questions`, they are what only the person can settle'), asked)
+  assert.ok(asked.includes('the findings it held for them among them'), asked)
+  assert.ok(asked.includes('Ask the person each question at once, one at a time, with its title, and wait for the answer'), asked)
+  assert.ok(asked.includes('then do with the answer what `questions_action` says'), asked)
+  assert.ok(asked.includes(`with the ConPort MCP tools it names and project="${HANDLE}"`), asked)
+  // The ledger's own way with an answer is not replaced by another one.
+  assert.doesNotMatch(asked, /plan import|CANCELLED|conport-task/)
+  // A question about an unfiled finding goes to the task the accounting filed, never to a second child.
+  assert.ok(asked.endsWith('the answer goes to that task, and only when step 5 finds none does it get a new child.'), asked)
   // A finding the run filed at its accounting is bound by its marker, with its brief — never filed a second time.
   const unfiled = stepOf(TEXTS[2] ?? '', 5)
   assert.ok(unfiled.includes('is a finding the run filed at its accounting as a child of the epic with that title'), unfiled)
-  assert.ok(unfiled.includes('its marker under the heading, `brief` as its requirement'), unfiled)
-  assert.ok(unfiled.includes('an entry with a `question` is asked of the person first'), unfiled)
+  assert.ok(unfiled.includes('An entry with a `question` is settled in step 4.'), unfiled)
+  assert.ok(unfiled.includes('the marker `<!-- conport-task: <id> -->` of that task under the heading and `brief` as its requirement'), unfiled)
+  assert.ok(unfiled.includes(`\`${NPX} plan import .superpowers/plans/doc-<M>.md -p ${HANDLE}\``), unfiled)
+  assert.ok(unfiled.includes('above the line `<!-- conport-pull-tail -->`'), unfiled)
   // Only when the accounting filed nothing does the import create the task.
   assert.ok(unfiled.endsWith('No such task — the accounting could not file it: add the section the same way without a marker, and the import creates its task.'), unfiled)
-  assert.ok(stepOf(TEXTS[2] ?? '', 6).includes('the same command runs them'))
+  assert.ok(stepOf(TEXTS[2] ?? '', 6).includes('the numbers of the tasks steps 4 and 5 made, moved or kept'))
+  assert.ok(stepOf(TEXTS[2] ?? '', 6).endsWith('the same command runs the sections step 5 added.'))
 })
 
 test('every epic task calls init without questions in its first step', () => {
@@ -534,7 +595,11 @@ test('the epic task survives the shell as one argument', () => {
   }
 })
 
-test('the first text stays under 10000 characters', () => {
+// A live check delivered a task of 9621 characters whole: Orca puts a long command into a launch file.
+// The text of a real epic stays under 11000; one with every name at its longest, under 11500.
+// The bound grew by 500 when the Rules took the filing condition of the tails epic word for word,
+// and by 500 again when they took the version rule of the release.
+test('the first text stays under 11000 characters, and under 11500 with every name at its longest', () => {
   const longest = epicTask({
     ...SDD,
     epic: 99999,
@@ -547,6 +612,6 @@ test('the first text stays under 10000 characters', () => {
       finalReviewer: 'a-long-plugin-name:a-long-final-reviewer-type'
     }
   })
-  assert.ok(longest.length < 10000, `${longest.length} characters`)
-  assert.ok(epicTask(SDD).length < 10000)
+  assert.ok(longest.length < 11500, `${longest.length} characters`)
+  assert.ok(epicTask(SDD).length < 11000, `${epicTask(SDD).length} characters`)
 })
