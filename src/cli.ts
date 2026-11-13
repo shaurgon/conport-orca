@@ -2,7 +2,7 @@
 import type { HandMode, OutsideTask, Refusal, Result, Roles } from './protocol'
 
 /** The conport CLI release the panel runs: kept equal to the CLI of the same repository. */
-export const CLI_VERSION = '0.10.0'
+export const CLI_VERSION = '0.11.0'
 
 /** How the CLI is started, as the person would type it. */
 export const CONPORT = ['npx', '-y', `conport@${CLI_VERSION}`]

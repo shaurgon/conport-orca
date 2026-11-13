@@ -36,10 +36,10 @@ afterEach(async () => {
 
 const ROOT = '/repo'
 const ok = <T,>(data: T): Result<T> => ({ ok: true, data })
-const SHOP: OrcaProject = { name: 'Shop', root: ROOT, kind: 'git', project: 'shop-api', source: 'repository', focused: true }
-const BILLING: OrcaProject = { name: 'Billing', root: '/billing', kind: 'git', project: 'billing-api', source: 'stored', focused: false }
-const NOTES: OrcaProject = { name: 'Notes', root: '/notes', kind: 'folder', project: null, source: null, focused: false }
-const DOCS: OrcaProject = { name: 'Docs', root: '/docs', kind: 'git', project: null, source: null, focused: false }
+const SHOP: OrcaProject = { name: 'Shop', root: ROOT, kind: 'git', project: 'shop-api', source: 'repository', lines: [], filesRead: true, focused: true }
+const BILLING: OrcaProject = { name: 'Billing', root: '/billing', kind: 'git', project: 'billing-api', source: 'stored', lines: [], filesRead: true, focused: false }
+const NOTES: OrcaProject = { name: 'Notes', root: '/notes', kind: 'folder', project: null, source: null, lines: [], filesRead: false, focused: false }
+const DOCS: OrcaProject = { name: 'Docs', root: '/docs', kind: 'git', project: null, source: null, lines: [], filesRead: true, focused: false }
 const unfocused = (p: OrcaProject): OrcaProject => ({ ...p, focused: false })
 
 /** What an earlier run of the panel remembered: the epic open in the project at ROOT. */
@@ -191,7 +191,7 @@ test('a project without a binding offers to bind it', async () => {
     'projects.list': () => ok([SHOP, docs]),
     'project.set': (input: { root: string; project: string }) => {
       docs = { ...docs, project: input.project, source: 'stored' }
-      return ok({ root: input.root, project: input.project, source: 'stored' })
+      return ok({ root: input.root, project: input.project, source: 'stored', lines: [], filesRead: true })
     }
   })
   view = await mount(panel, { host })
@@ -206,10 +206,66 @@ test('a project without a binding offers to bind it', async () => {
   assert.equal(view.find({ text: 'Bind' }), null)
 })
 
+test('the bind card names .conport.json', async () => {
+  const { host, calls } = stub({ 'projects.list': () => ok([{ ...DOCS, focused: true }]) })
+  view = await mount(panel, { host })
+  const card = view.find({ type: 'Card', label: 'ConPort project' })
+  assert.equal(
+    card?.props.description,
+    'The repository has no .conport.json with project_name. Name the project once — the panel remembers it for this repository.'
+  )
+  doesNotMatch(textOf(view), /settings\.local\.json|CONPORT_PROJECT_NAME/)
+  assert.deepEqual(inputsOf(calls, 'epics.list'), [])
+})
+
+test('the bind card of a submodule says its settings files are not read', async () => {
+  const { host } = stub({ 'projects.list': () => ok([{ ...DOCS, focused: true, filesRead: false }]) })
+  view = await mount(panel, { host })
+  assert.equal(
+    view.find({ type: 'Card', label: 'ConPort project' })?.props.description,
+    'This repository is a submodule or a worktree of a bare repository: ConPort settings files are not read here. Bind a project below.'
+  )
+  // The binding is offered all the same: it is the only way to name the project there.
+  assert.ok(view.find({ type: 'Input', label: 'ConPort project' }))
+})
+
+test('settings lines are shown with the project', async () => {
+  const LINES = [
+    'units is read from .conport.json only',
+    'CONPORT_PROJECT_NAME in ~/.config/conport/.env is not read: it would apply to every repository — remove it'
+  ]
+  const { host, calls } = stub({ 'projects.list': () => ok([{ ...SHOP, source: 'file', lines: LINES }]) })
+  view = await mount(panel, { host })
+  const shown = view.find({ testId: 'settings-lines' })
+  assert.ok(shown, textOf(view))
+  assert.deepEqual(
+    view.findAll({ type: 'Text' }).filter((t) => t.path.startsWith(`${shown.path}/`)).map((t) => t.text),
+    LINES
+  )
+  // The project is read as usual beside them.
+  assert.deepEqual(inputsOf(calls, 'epics.list'), [{ project: 'shop-api', root: ROOT }])
+  assert.ok(view.find({ testId: 'epic:15' }))
+  await view.unmount()
+
+  // A broken settings file names no project: its lines say what to fix, and no binding is offered.
+  const BROKEN = ['.conport.json is not valid JSON (line 1, column 29): fix it']
+  const broken = stub({ 'projects.list': () => ok([{ ...DOCS, focused: true, source: 'file', lines: BROKEN }]) })
+  view = await mount(panel, { host: broken.host })
+  assert.equal(view.find({ testId: 'settings-lines' })?.text.includes(BROKEN[0] ?? '-'), true, textOf(view))
+  assert.equal(view.find({ type: 'Input', label: 'ConPort project' }), null)
+  assert.equal(view.find({ type: 'Card', label: 'ConPort project' })?.props.description, text.SETTINGS_BROKEN)
+  assert.deepEqual(inputsOf(broken.calls, 'epics.list'), [])
+
+  // Without lines no box is drawn.
+  await view.unmount()
+  view = await mount(panel, { host: stub({}).host })
+  assert.equal(view.find({ testId: 'settings-lines' }), null)
+})
+
 test('a project bound by the panel can be bound anew', async () => {
   const { host, calls } = stub({
     'projects.list': () => ok([BILLING]),
-    'project.forget': (input: { root: string }) => ok({ root: input.root, project: null, source: null })
+    'project.forget': (input: { root: string }) => ok({ root: input.root, project: null, source: null, lines: [], filesRead: true })
   })
   view = await mount(panel, { host })
   await view.toggle({ testId: 'project-picker' })

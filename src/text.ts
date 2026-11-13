@@ -318,6 +318,17 @@ export function promptRefusal(code: string, subject: PromptSubject): FailureText
 
 const ORCA_AWAY: FailureText = { what: 'Orca did not answer', action: 'Check that Orca is running and try again.' }
 
+/** The bind card of a repository whose settings file names no project. */
+export const BIND_PROJECT =
+  'The repository has no .conport.json with project_name. Name the project once — the panel remembers it for this repository.'
+
+/** The bind card of a submodule or a worktree of a bare repository: its settings files are not read. */
+export const BIND_PROJECT_NO_FILES =
+  'This repository is a submodule or a worktree of a bare repository: ConPort settings files are not read here. Bind a project below.'
+
+/** In place of the bind card while a settings file is there but broken: it names no project, and no binding stands in. */
+export const SETTINGS_BROKEN = "The repository's ConPort settings name no project until the lines above are fixed. Fix them and press Refresh."
+
 /**
  * The refusals of the conport and orca CLIs by code, for the commands the plugin runs. The CLIs
  * word them in English for a terminal, and orca names no action: the panel says them by their code.
@@ -326,7 +337,7 @@ const FAILURES: Record<string, FailureText> = {
   no_project: { what: 'No ConPort project is named', action: 'Bind the project in the panel and try again.' },
   project_not_found: {
     what: 'ConPort project not found',
-    action: 'Check the project binding in the panel or CONPORT_PROJECT_NAME and try again.'
+    action: 'Check project_name in .conport.json or the project binding in the panel and try again.'
   },
   no_api_key: { what: 'No ConPort API key', action: 'Add CONPORT_API_KEY to ~/.config/conport/.env and try again.' },
   conport_unreachable: { what: 'ConPort did not answer', action: 'Check the network and try again.' },

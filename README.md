@@ -129,9 +129,16 @@ for more access than the version you approved.
 
 ## Project and API key
 
-The ConPort project comes from `CONPORT_PROJECT_NAME` in `.claude/settings.local.json` of the
-repository's main working tree; without it the panel asks once and remembers the answer for that
-repository. The plugin never touches the API key: the CLI reads it from its own configuration, and
+The ConPort project comes from `project_name` in `.conport.json` of the repository's main working
+tree, or in `.conport.local.json` beside it, which overrides it for you alone (see
+[Project settings](https://conport.app/docs/projects/project-settings.md)). Without either, the
+panel reads the old place, `CONPORT_PROJECT_NAME` in `.claude/settings.local.json`, then asks once
+and remembers the answer for that repository. What the settings files need fixing — a file that is
+not valid JSON, a key of the wrong type, an API key in a file, a personal file git does not ignore —
+the panel shows with the project, a line each; a broken file, or a git that cannot tell about the
+repository, names no project until it is fixed. A submodule or a worktree of a bare repository has
+no main working tree: none of its files are read, only the project the panel remembered.
+The plugin never touches the API key: the CLI reads it from its own configuration, and
 when it refuses for a missing key the panel says so in its own words, by the code of the refusal, with
 the one thing to do.
 

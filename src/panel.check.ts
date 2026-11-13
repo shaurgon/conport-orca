@@ -21,10 +21,10 @@ import type { EpicList, EpicSession, OrcaProject, Result } from './protocol'
 const ok = <T>(data: T): Result<T> => ({ ok: true, data })
 const ROOT = '/work/shop'
 const PROJECTS: OrcaProject[] = [
-  { name: 'Shop', root: ROOT, kind: 'git', project: 'shop-api', source: 'repository', focused: true },
-  { name: 'Billing', root: '/work/billing', kind: 'git', project: 'billing-api', source: 'stored', focused: false },
-  { name: 'Docs', root: '/work/docs', kind: 'git', project: null, source: null, focused: false },
-  { name: 'Notes', root: '/work/notes', kind: 'folder', project: null, source: null, focused: false }
+  { name: 'Shop', root: ROOT, kind: 'git', project: 'shop-api', source: 'repository', lines: [], filesRead: true, focused: true },
+  { name: 'Billing', root: '/work/billing', kind: 'git', project: 'billing-api', source: 'stored', lines: [], filesRead: true, focused: false },
+  { name: 'Docs', root: '/work/docs', kind: 'git', project: null, source: null, lines: [], filesRead: true, focused: false },
+  { name: 'Notes', root: '/work/notes', kind: 'folder', project: null, source: null, lines: [], filesRead: false, focused: false }
 ]
 /** As the CLI refuses when Claude Code cannot be asked for its plugins. */
 const NO_SUBAGENTS: Result<never> = {

@@ -54,6 +54,8 @@ import type {
 } from './protocol'
 import {
   AGENT_MISSING_ACTION,
+  BIND_PROJECT,
+  BIND_PROJECT_NO_FILES,
   BRANCHES_NOTE,
   BUG_LABEL,
   COPY_NOTE,
@@ -76,6 +78,7 @@ import {
   ROLES_NO_HARNESS_NOTE,
   ROLES_UNTYPED_NOTE,
   rolesUnavailableNote,
+  SETTINGS_BROKEN,
   SHEET_STEPS,
   STARTED_NOTE,
   startNotice,
@@ -388,7 +391,7 @@ function rebind(ctx: RepoContext): void {
   if (!list?.ok) return
   set(projects, {
     ok: true,
-    data: list.data.map((p) => (p.root === ctx.root ? { ...p, project: ctx.project, source: ctx.source } : p))
+    data: list.data.map((p) => (p.root === ctx.root ? { ...p, project: ctx.project, source: ctx.source, lines: ctx.lines, filesRead: ctx.filesRead } : p))
   })
 }
 
@@ -698,12 +701,25 @@ function Header() {
   )
 }
 
-function BindCard() {
+/** What the settings files of the project say, each line with the one thing to do. */
+function SettingsLines({ lines }: { lines: readonly string[] }) {
+  if (lines.length === 0) return null
   return (
-    <Card
-      title="ConPort project"
-      description="The repository's .claude/settings.local.json has no CONPORT_PROJECT_NAME. Name the project once — the panel remembers it for this repository."
-    >
+    <Callout tone="warning" icon="warning" title="ConPort settings">
+      <Stack gap="xs">
+        {lines.map((line, i) => (
+          <Text key={`settings-line-${i}`} size="sm">
+            {line}
+          </Text>
+        ))}
+      </Stack>
+    </Callout>
+  )
+}
+
+function BindCard({ filesRead }: { filesRead: boolean }) {
+  return (
+    <Card title="ConPort project" description={filesRead ? BIND_PROJECT : BIND_PROJECT_NO_FILES}>
       <Row gap="xs" align="end">
         <Input
           label="ConPort project"
@@ -1288,7 +1304,18 @@ function EpicScreen({ epic, project }: { epic: EpicSummary; project: OrcaProject
 function Body() {
   const project = current()
   if (project === null) return null
-  if (project.project === null) return <BindCard />
+  return (
+    <Stack gap="md">
+      <SettingsLines key="settings-lines" lines={project.lines} />
+      <ProjectBody project={project} />
+    </Stack>
+  )
+}
+
+function ProjectBody({ project }: { project: OrcaProject }) {
+  // A broken settings file names no project, and a binding would not stand in for it.
+  if (project.project === null && project.source === 'file') return <Card title="ConPort project" description={SETTINGS_BROKEN} />
+  if (project.project === null) return <BindCard filesRead={project.filesRead} />
   const list = read(epics)
   if (list === null) return <Skeleton shape="text" lines={4} label="Loading epics and tasks…" />
   if (!list.ok) return null

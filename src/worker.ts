@@ -1,8 +1,9 @@
 // The plugin's worker: runs the conport CLI and orca as child processes for the panel. It reads
 // only when the panel asks: no timer, no status bar item, no notification — the state of the
 // agents is Orca's own.
-import { readFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { readFile, realpath } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, join, resolve as resolvePath, sep } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 import {
   CONPORT,
@@ -30,6 +31,7 @@ import type {
   TaskList,
   Way
 } from './protocol'
+import { readSettings, type SettingsText } from './settings'
 import { AGENT_MISSING_ACTION, HARNESS_MISSING_ACTION, type PromptSubject, promptRefusal, REFUSED } from './text'
 
 /** How the worker starts the three programs it drives. */
@@ -37,6 +39,10 @@ export interface WorkerDeps {
   conport: readonly string[]
   orca: readonly string[]
   git: readonly string[]
+  /** The user env file of the conport CLI; by default `<XDG_CONFIG_HOME | ~/.config>/conport/.env`. */
+  userEnv?: string
+  /** How long git may take to say anything about the settings; by default GIT_TIMEOUT_MS. */
+  gitTimeoutMs?: number
 }
 
 /** A working copy of a repository, as `orca worktree list` names it. */
@@ -79,6 +85,50 @@ const ok = <T>(data: T): { ok: true; data: T } => ({ ok: true, data })
 
 /** A refusal the worker words itself, by its code and its text of `text.ts`. */
 const refuse = (code: string, { what, action }: { what: string; action: string }) => fail(code, what, action)
+
+const FORBID_VAR = 'CONPORT_SETTINGS_FORBID_ROOT'
+
+/** How long git may take to say anything about the settings files, as every reader of them waits. */
+export const GIT_TIMEOUT_MS = 5000
+
+/** The user env file of the conport CLI: `<XDG_CONFIG_HOME | <home>/.config>/conport/.env`. */
+export function userEnvFile(env: Record<string, string | undefined>, home: string): string {
+  const config = env.XDG_CONFIG_HOME?.trim() || join(home, '.config')
+  return join(config, 'conport', '.env')
+}
+
+/** The text of a file, null when there is none, its error code when it is there but cannot be read. */
+async function readText(file: string): Promise<SettingsText> {
+  try {
+    return await readFile(file, 'utf8')
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null
+    return { error: code ?? 'EIO' }
+  }
+}
+
+/** A path with its links resolved, as far as it exists. */
+async function realPath(path: string): Promise<string> {
+  try {
+    return await realpath(path)
+  } catch {
+    return resolvePath(path)
+  }
+}
+
+/**
+ * With CONPORT_SETTINGS_FORBID_ROOT set, a root inside that path throws: a test must not read
+ * the settings of the repository it runs in.
+ */
+async function guardRoot(root: string): Promise<void> {
+  const forbid = process.env[FORBID_VAR]
+  if (!forbid) return
+  const [banned, real] = await Promise.all([realPath(forbid), realPath(root)])
+  if (real === banned || real.startsWith(banned.endsWith(sep) ? banned : banned + sep)) {
+    throw new Error(`settings root ${root} is inside ${FORBID_VAR}: run the test in a temporary folder`)
+  }
+}
 
 /** CONPORT_PROJECT_NAME from `.claude/settings.local.json` of the repository's main working tree. */
 async function repositoryProject(root: string): Promise<string | null> {
@@ -193,12 +243,96 @@ export function createWorker(deps: WorkerDeps): {
       return ok(repoId)
     }
 
+    /**
+     * A call of git about the settings of `root`, bounded as every reader bounds it. Git is asked
+     * in English (LC_ALL=C, no LANGUAGE): a git with translations would say "not a git repository"
+     * in the person's language, and a folder outside git would read as a git failure.
+     */
+    const gitAbout = (root: string, args: string[]) =>
+      runProcess([...deps.git, '-C', root, ...args], undefined, deps.gitTimeoutMs ?? GIT_TIMEOUT_MS, {
+        ...process.env,
+        LC_ALL: 'C',
+        LANGUAGE: ''
+      })
+
+    /**
+     * What git says of the repository at `root`: `main` — it has a main working tree, so its
+     * settings files are read; `none` — a submodule or a worktree of a bare repository, whose common
+     * git directory is not named `.git`: it has no main working tree and none of its files are
+     * read; `outside` — not a git repository; `failed` — git could not tell.
+     */
+    const repositoryKind = async (root: string): Promise<{ kind: 'main' | 'none' | 'outside' } | { kind: 'failed'; line: string }> => {
+      const answer = await gitAbout(root, ['rev-parse', '--show-toplevel', '--git-common-dir'])
+      let error: string
+      if (answer.failure !== undefined) {
+        error = answer.failure
+      } else if (answer.code !== 0) {
+        error = answer.stderr.trim() || `exit code ${answer.code}`
+        if (/not a git repository/i.test(error)) return { kind: 'outside' }
+      } else {
+        const [toplevel, commonDir] = answer.stdout.split(/\r?\n/).map((line) => line.trim())
+        if (toplevel && commonDir) {
+          const last = commonDir.replace(/\\/g, '/').replace(/\/+$/, '').split('/').at(-1)
+          return { kind: last === '.git' ? 'main' : 'none' }
+        }
+        error = `unexpected answer of git rev-parse: ${answer.stdout.trim()}`
+      }
+      const first = error.split('\n').map((line) => line.trim()).find(Boolean) ?? 'unknown error'
+      return { kind: 'failed', line: `git failed (${first}): ConPort settings were not read` }
+    }
+
+    /**
+     * Whether git ignores the personal settings file in `root` and does not track it: true, false,
+     * or null when git cannot tell.
+     */
+    const localIgnoredIn = async (root: string): Promise<boolean | null> => {
+      const tracked = await gitAbout(root, ['ls-files', '--error-unmatch', '--', '.conport.local.json'])
+      if (tracked.failure !== undefined) return null
+      if (tracked.code === 0) return false
+      if (tracked.code !== 1) return null
+      const ignored = await gitAbout(root, ['check-ignore', '-q', '--', '.conport.local.json'])
+      if (ignored.failure !== undefined) return null
+      return ignored.code === 0 ? true : ignored.code === 1 ? false : null
+    }
+
+    /**
+     * The settings of the repository at `root`, read by the rules every reader of them follows,
+     * and whether its own files may name the project. No environment variable names the project
+     * here: the plugin's process is Orca's. A git that fails names no project; a submodule or a
+     * worktree of a bare repository reads none of its files.
+     */
+    const settingsOf = async (root: string): Promise<{ settings: ReturnType<typeof readSettings>; readsFiles: boolean }> => {
+      await guardRoot(root)
+      const [repository, userText] = await Promise.all([repositoryKind(root), readText(deps.userEnv ?? userEnvFile(process.env, homedir()))])
+      const userEnv = typeof userText === 'string' ? userText : null
+      const nothing = { shared: null, local: null, localIgnored: null, env: {}, explicit: null, userEnv }
+      if (repository.kind === 'failed') {
+        const settings = readSettings(nothing)
+        return { settings: { ...settings, lines: [repository.line, ...settings.lines], blocked: true }, readsFiles: false }
+      }
+      if (repository.kind === 'none') return { settings: readSettings(nothing), readsFiles: false }
+      const [shared, local] = await Promise.all([readText(join(root, '.conport.json')), readText(join(root, '.conport.local.json'))])
+      // Git is asked about the personal file only when it is there; outside git nothing ignores it.
+      const localIgnored = local === null || repository.kind === 'outside' ? null : await localIgnoredIn(root)
+      return { settings: readSettings({ ...nothing, shared, local, localIgnored }), readsFiles: true }
+    }
+
+    /**
+     * The project of the repository at `root`: from its settings files, then from the old place
+     * (`.claude/settings.local.json`), then from the binding the panel remembered. A broken
+     * settings file, or a git that fails, names none, and nothing stands in for it. A submodule or
+     * a worktree of a bare repository has only the binding.
+     */
     const contextOf = async (root: string): Promise<RepoContext> => {
-      const fromRepository = await repositoryProject(root)
-      if (fromRepository) return { root, project: fromRepository, source: 'repository' }
+      const { settings, readsFiles: filesRead } = await settingsOf(root)
+      const { lines } = settings
+      if (settings.project !== null) return { root, project: settings.project, source: 'file', lines, filesRead }
+      if (settings.blocked) return { root, project: null, source: 'file', lines, filesRead }
+      const fromRepository = filesRead ? await repositoryProject(root) : null
+      if (fromRepository) return { root, project: fromRepository, source: 'repository', lines, filesRead }
       const stored = await orca.storage.get(`project:${root}`)
-      if (typeof stored === 'string' && stored !== '') return { root, project: stored, source: 'stored' }
-      return { root, project: null, source: null }
+      if (typeof stored === 'string' && stored !== '') return { root, project: stored, source: 'stored', lines, filesRead }
+      return { root, project: null, source: null, lines, filesRead }
     }
 
     /** A terminal in the repository root, which must be a workspace of Orca. */
@@ -307,7 +441,7 @@ export function createWorker(deps: WorkerDeps): {
         if (!repo.path) continue
         const kind = repo.kind === 'folder' ? 'folder' : 'git'
         // A folder cannot run an epic: its settings are not read.
-        const context = kind === 'git' ? await contextOf(repo.path) : { root: repo.path, project: null, source: null }
+        const context = kind === 'git' ? await contextOf(repo.path) : { root: repo.path, project: null, source: null, lines: [], filesRead: false }
         projects.push({
           ...context,
           name: repo.displayName || basename(normalize(repo.path)),

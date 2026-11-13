@@ -19,8 +19,23 @@ export interface RepoContext {
   root: string
   /** The project as written in the settings or by the person: a handle or a name. */
   project: string | null
-  /** Where `project` came from. */
-  source: 'repository' | 'stored' | null
+  /**
+   * Where `project` came from: `file` — `.conport.json` or `.conport.local.json` of the main
+   * working tree; `repository` — `CONPORT_PROJECT_NAME` in its `.claude/settings.local.json`, the
+   * old place; `stored` — the binding the panel remembered. `file` with no project: a settings
+   * file is there but broken, or git could not tell about the repository, so no project is named
+   * and nothing stands in for it until the lines are fixed.
+   */
+  source: 'file' | 'repository' | 'stored' | null
+  /** What the person should know about the settings files, each line naming the one thing to do. */
+  lines: string[]
+  /**
+   * Whether the repository's own files were read for the project. False for a submodule or a
+   * worktree of a bare repository, which has no main working tree (only the binding names its
+   * project); when git could not tell about the repository (no project at all); and for an Orca
+   * project of kind `folder`, which is never read.
+   */
+  filesRead: boolean
 }
 
 /** A project of Orca's sidebar, as `orca repo list` names it, with its ConPort project. */

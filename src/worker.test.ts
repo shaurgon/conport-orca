@@ -147,6 +147,8 @@ const shop = (root: string, focused: boolean) => ({
   kind: 'git',
   project: 'shop-api',
   source: 'repository',
+  lines: [],
+  filesRead: true,
   focused
 })
 
@@ -167,6 +169,309 @@ test('project comes from CONPORT_PROJECT_NAME of the repository settings', async
   writeSettings(f.focused, { env: { CONPORT_PROJECT_NAME: 'somewhere-else' } })
   const worker = await mountWorker(f.worker, { host: f.host() })
   assert.deepEqual(await worker.request('projects.list'), { ok: true, data: [shop(f.root, true)] })
+  await worker.deactivate()
+})
+
+/** What `projects.list` says of the fake repository: its project, where it came from and the settings lines. */
+async function contextOfRepo(worker: Worker): Promise<unknown> {
+  const answer = await worker.request('projects.list')
+  if (!answer.ok) return answer
+  return answer.data.map(({ project, source, lines }) => ({ project, source, lines }))
+}
+
+/** git of a repository whose personal settings file is untracked and ignored. */
+const localIgnored = ({ root }: FakeDirs): FakeAnswer[] => [
+  { match: `-C ${root} ls-files --error-unmatch -- .conport.local.json`, code: 1 },
+  { match: `-C ${root} check-ignore -q -- .conport.local.json`, code: 0 }
+]
+
+test('project comes from .conport.json of the main working tree', async () => {
+  const f = fake([])
+  writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ $schema: 'https://conport.app/schema/conport.json', project_name: 'shop-api' }))
+  // The old place and the remembered binding lose to the file; the focused worktree is not read.
+  writeSettings(f.root, { env: { CONPORT_PROJECT_NAME: 'old-place' } })
+  mkdirSync(f.focused, { recursive: true })
+  writeFileSync(join(f.focused, '.conport.json'), JSON.stringify({ project_name: 'somewhere-else' }))
+  const worker = await mountWorker(f.worker, { host: f.host({}, { [`project:${f.root}`]: 'remembered' }) })
+  assert.deepEqual(await contextOfRepo(worker), [{ project: 'shop-api', source: 'file', lines: [] }])
+  // Git is asked only whether the root has a main working tree: with no personal file, not about one.
+  assert.deepEqual(f.gitCalls(), [['-C', f.root, 'rev-parse', '--show-toplevel', '--git-common-dir']])
+  await worker.deactivate()
+})
+
+test('the local settings file of the main working tree overrides it', async () => {
+  const f = fake([], [], localIgnored)
+  writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
+  // Written by a Windows editor: a byte order mark and CRLF line ends read as any file.
+  writeFileSync(join(f.root, '.conport.local.json'), '﻿{\r\n  "project_name": "mine"\r\n}\r\n')
+  const worker = await mountWorker(f.worker, { host: f.host() })
+  assert.deepEqual(await contextOfRepo(worker), [
+    { project: 'mine', source: 'file', lines: ['project_name from .conport.local.json (mine) overrides .conport.json (shop-api)'] }
+  ])
+  // Whether the personal file is ignored is asked in the working tree that holds it.
+  assert.deepEqual(f.gitCalls(), [
+    ['-C', f.root, 'rev-parse', '--show-toplevel', '--git-common-dir'],
+    ['-C', f.root, 'ls-files', '--error-unmatch', '--', '.conport.local.json'],
+    ['-C', f.root, 'check-ignore', '-q', '--', '.conport.local.json']
+  ])
+  await worker.deactivate()
+})
+
+// The old place is read after the rules, never as their variable: naming another project than
+// the file, it loses and says nothing — as in the Herdr mod.
+test('a file and the old place naming another project: the file, with no line', async () => {
+  const f = fake([])
+  writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
+  writeSettings(f.root, { env: { CONPORT_PROJECT_NAME: 'acme-app' } })
+  const worker = await mountWorker(f.worker, { host: f.host() })
+  assert.deepEqual(await contextOfRepo(worker), [{ project: 'shop-api', source: 'file', lines: [] }])
+  await worker.deactivate()
+})
+
+test('the old settings place is read when there is no file', async () => {
+  for (const shared of [null, JSON.stringify({ plugins: { superpowers: true } })]) {
+    const f = fake([])
+    // A settings file without project_name names no project: the old place is read next.
+    if (shared !== null) writeFileSync(join(f.root, '.conport.json'), shared)
+    writeSettings(f.root, { env: { CONPORT_PROJECT_NAME: ' shop-api ' } })
+    const worker = await mountWorker(f.worker, { host: f.host({}, { [`project:${f.root}`]: 'remembered' }) })
+    assert.deepEqual(await contextOfRepo(worker), [{ project: 'shop-api', source: 'repository', lines: [] }], String(shared))
+    await worker.deactivate()
+  }
+})
+
+test('the stored binding is read last', async () => {
+  const f = fake([])
+  writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ arch: { git: true } }))
+  writeSettings(f.root, { env: { OTHER: 'x' } })
+  const worker = await mountWorker(f.worker, { host: f.host({}, { [`project:${f.root}`]: 'remembered' }) })
+  assert.deepEqual(await contextOfRepo(worker), [{ project: 'remembered', source: 'stored', lines: [] }])
+  // Once the file names the project, the binding no longer counts.
+  writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
+  assert.deepEqual(await contextOfRepo(worker), [{ project: 'shop-api', source: 'file', lines: [] }])
+  await worker.deactivate()
+})
+
+test('settings lines reach the context', async () => {
+  // A personal file git does not ignore, and the variable in the user env file.
+  const exposed = fake([], [], ({ root }) => [
+    { match: `-C ${root} ls-files --error-unmatch -- .conport.local.json`, code: 1 },
+    { match: `-C ${root} check-ignore -q -- .conport.local.json`, code: 1 }
+  ])
+  writeFileSync(join(exposed.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
+  writeFileSync(join(exposed.root, '.conport.local.json'), JSON.stringify({ plugins: { superpowers: true }, units: [] }))
+  writeFileSync(exposed.userEnv, 'CONPORT_API_KEY=x\nCONPORT_PROJECT_NAME=everywhere\n')
+  let worker = await mountWorker(exposed.worker, { host: exposed.host() })
+  assert.deepEqual(await contextOfRepo(worker), [
+    {
+      project: 'shop-api',
+      source: 'file',
+      lines: [
+        'units is read from .conport.json only',
+        '.conport.local.json is not ignored by git: add it to .gitignore',
+        'CONPORT_PROJECT_NAME in ~/.config/conport/.env is not read: it would apply to every repository — remove it'
+      ]
+    }
+  ])
+  // The answers of the binding carry the lines too.
+  const set = await worker.request('project.set', { root: exposed.root, project: 'other' })
+  assert.deepEqual(set.ok ? set.data.lines.length : set, 3)
+  await worker.deactivate()
+
+  // A broken file names no project: neither the old place nor the binding stands in for it.
+  const broken = fake([])
+  writeFileSync(join(broken.root, '.conport.json'), '{"project_name": "shop-api",}')
+  writeSettings(broken.root, { env: { CONPORT_PROJECT_NAME: 'old-place' } })
+  worker = await mountWorker(broken.worker, { host: broken.host({}, { [`project:${broken.root}`]: 'remembered' }) })
+  assert.deepEqual(await contextOfRepo(worker), [
+    { project: null, source: 'file', lines: ['.conport.json is not valid JSON (line 1, column 29): fix it'] }
+  ])
+  await worker.deactivate()
+
+  // A folder where the file should be is a line, not a crash.
+  const folder = fake([])
+  mkdirSync(join(folder.root, '.conport.json'))
+  worker = await mountWorker(folder.worker, { host: folder.host() })
+  assert.deepEqual(await contextOfRepo(worker), [
+    { project: null, source: 'file', lines: ['.conport.json cannot be read (EISDIR): fix it'] }
+  ])
+  await worker.deactivate()
+})
+
+test('a submodule or a worktree of a bare repository has only the stored binding', async () => {
+  for (const commonDir of ['/work/super/.git/modules/repo', '/work/repo.git']) {
+    const f = fake([], [], ({ root }) => [
+      { match: `-C ${root} rev-parse --show-toplevel --git-common-dir`, stdout: `${root}\n${commonDir}\n` }
+    ])
+    // Neither the settings files nor the old place are read: the repository has no main working tree.
+    writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
+    writeFileSync(join(f.root, '.conport.local.json'), '{')
+    writeSettings(f.root, { env: { CONPORT_PROJECT_NAME: 'old-place' } })
+    let worker = await mountWorker(f.worker, { host: f.host() })
+    assert.deepEqual(await contextOfRepo(worker), [{ project: null, source: null, lines: [] }], commonDir)
+    await worker.deactivate()
+    worker = await mountWorker(f.worker, { host: f.host({}, { [`project:${f.root}`]: 'remembered' }) })
+    assert.deepEqual(await contextOfRepo(worker), [{ project: 'remembered', source: 'stored', lines: [] }], commonDir)
+    assert.deepEqual(f.gitCalls().map((call) => call[2]), ['rev-parse', 'rev-parse'], commonDir)
+    // The panel is told that the files were not read, so its bind card does not claim there are none.
+    const listed = await worker.request('projects.list')
+    assert.deepEqual(listed.ok ? listed.data.map((p) => p.filesRead) : listed, [false], commonDir)
+    await worker.deactivate()
+  }
+})
+
+test('a git that fails names no project, and nothing stands in for it', async () => {
+  const f = fake([], [], ({ root }) => [
+    {
+      match: `-C ${root} rev-parse --show-toplevel --git-common-dir`,
+      code: 128,
+      stderr: `fatal: detected dubious ownership in repository at '${root}'\nTo add an exception for this directory, call:\n`
+    }
+  ])
+  writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
+  writeSettings(f.root, { env: { CONPORT_PROJECT_NAME: 'old-place' } })
+  const worker = await mountWorker(f.worker, { host: f.host({}, { [`project:${f.root}`]: 'remembered' }) })
+  assert.deepEqual(await contextOfRepo(worker), [
+    {
+      project: null,
+      source: 'file',
+      lines: [`git failed (fatal: detected dubious ownership in repository at '${f.root}'): ConPort settings were not read`]
+    }
+  ])
+  await worker.deactivate()
+
+  // A git that cannot start fails the same way.
+  const { createWorker } = await import('./worker')
+  const missing = createWorker({ ...f.deps, git: ['/nonexistent/bin/git'] })
+  const broken = await mountWorker({ default: missing.activate, deactivate: missing.deactivate } as typeof f.worker, { host: f.host() })
+  const answer = await contextOfRepo(broken)
+  assert.match(JSON.stringify(answer), /"lines":\["git failed \(spawn \/nonexistent\/bin\/git ENOENT\): ConPort settings were not read"\]/)
+  await broken.deactivate()
+})
+
+test('outside git the settings files are read and git is not asked about the personal file', async () => {
+  const f = fake([], [], ({ root }) => [
+    {
+      match: `-C ${root} rev-parse --show-toplevel --git-common-dir`,
+      code: 128,
+      stderr: 'fatal: not a git repository (or any of the parent directories): .git\n'
+    }
+  ])
+  writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
+  writeFileSync(join(f.root, '.conport.local.json'), JSON.stringify({ project_name: 'mine' }))
+  const worker = await mountWorker(f.worker, { host: f.host() })
+  assert.deepEqual(await contextOfRepo(worker), [
+    { project: 'mine', source: 'file', lines: ['project_name from .conport.local.json (mine) overrides .conport.json (shop-api)'] }
+  ])
+  assert.deepEqual(f.gitCalls(), [['-C', f.root, 'rev-parse', '--show-toplevel', '--git-common-dir']])
+  const listed = await worker.request('projects.list')
+  assert.deepEqual(listed.ok ? listed.data.map((p) => p.filesRead) : listed, [true])
+  await worker.deactivate()
+
+  // Without a settings file the old place is read there too.
+  const old = fake([], [], ({ root }) => [
+    {
+      match: `-C ${root} rev-parse --show-toplevel --git-common-dir`,
+      code: 128,
+      stderr: 'fatal: not a git repository (or any of the parent directories): .git\n'
+    }
+  ])
+  writeSettings(old.root, { env: { CONPORT_PROJECT_NAME: 'shop-api' } })
+  const oldWorker = await mountWorker(old.worker, { host: old.host({}, { [`project:${old.root}`]: 'remembered' }) })
+  assert.deepEqual(await contextOfRepo(oldWorker), [{ project: 'shop-api', source: 'repository', lines: [] }])
+  await oldWorker.deactivate()
+})
+
+test('git is asked in English: under a Russian locale a folder outside git is still outside git', async () => {
+  const f = fake([], [], ({ root }) => [
+    {
+      match: `-C ${root} rev-parse --show-toplevel --git-common-dir`,
+      code: 128,
+      stderr: 'fatal: not a git repository (or any of the parent directories): .git\n',
+      translatedStderr: 'fatal: не найден git репозиторий (или один из родительских каталогов): .git\n'
+    }
+  ])
+  writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
+  const saved = { LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, LANGUAGE: process.env.LANGUAGE }
+  Object.assign(process.env, { LANG: 'ru_RU.UTF-8', LC_ALL: 'ru_RU.UTF-8', LANGUAGE: 'ru' })
+  try {
+    const worker = await mountWorker(f.worker, { host: f.host() })
+    assert.deepEqual(await contextOfRepo(worker), [{ project: 'shop-api', source: 'file', lines: [] }])
+    await worker.deactivate()
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+})
+
+test('git that does not answer in time names no project, and nothing stands in for it', async () => {
+  const { GIT_TIMEOUT_MS, createWorker } = await import('./worker')
+  // Every reader of the settings waits 5 s for git.
+  assert.equal(GIT_TIMEOUT_MS, 5000)
+  const f = fake([], [], ({ root }) => [
+    { match: `-C ${root} rev-parse --show-toplevel --git-common-dir`, stdout: `${root}\n.git\n`, delayMs: 3000 }
+  ])
+  writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
+  writeSettings(f.root, { env: { CONPORT_PROJECT_NAME: 'old-place' } })
+  const quick = createWorker({ ...f.deps, gitTimeoutMs: 200 })
+  const worker = await mountWorker({ default: quick.activate, deactivate: quick.deactivate } as typeof f.worker, {
+    host: f.host({}, { [`project:${f.root}`]: 'remembered' })
+  })
+  assert.deepEqual(await contextOfRepo(worker), [
+    { project: null, source: 'file', lines: ['git failed (no answer in 0.2 s): ConPort settings were not read'] }
+  ])
+  await worker.deactivate()
+})
+
+test('the user env file is in XDG_CONFIG_HOME when it is set, else in .config of the home folder', async () => {
+  const { userEnvFile } = await import('./worker')
+  assert.equal(userEnvFile({ XDG_CONFIG_HOME: '/xdg' }, '/work/me'), join('/xdg', 'conport', '.env'))
+  for (const unset of [{}, { XDG_CONFIG_HOME: '' }, { XDG_CONFIG_HOME: '  ' }]) {
+    assert.equal(userEnvFile(unset, '/work/me'), join('/work/me', '.config', 'conport', '.env'), JSON.stringify(unset))
+  }
+})
+
+test('a command past its timeout is killed and told as a failure', async () => {
+  const { runProcess } = await import('./exec')
+  const started = Date.now()
+  const answer = await runProcess([process.execPath, '-e', 'setTimeout(() => {}, 10000)'], undefined, 200)
+  assert.equal(answer.code, null)
+  assert.equal(answer.failure, 'no answer in 0.2 s')
+  assert.ok(Date.now() - started < 5000)
+})
+
+test('a settings root inside CONPORT_SETTINGS_FORBID_ROOT is refused', async () => {
+  const f = fake([])
+  writeFileSync(join(f.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
+  const worker = await mountWorker(f.worker, { host: f.host() })
+  const before = process.env.CONPORT_SETTINGS_FORBID_ROOT
+  const forbidding = async (path: string, check: () => Promise<void>): Promise<void> => {
+    process.env.CONPORT_SETTINGS_FORBID_ROOT = path
+    try {
+      await check()
+    } finally {
+      if (before === undefined) delete process.env.CONPORT_SETTINGS_FORBID_ROOT
+      else process.env.CONPORT_SETTINGS_FORBID_ROOT = before
+    }
+  }
+  // The root itself and a folder above it are forbidden.
+  for (const path of [f.root, dirname(f.root)]) {
+    await forbidding(path, () =>
+      assert.rejects(worker.request('projects.list'), (error: unknown) => {
+        assert.equal(
+          (error as Error).message,
+          `settings root ${f.root} is inside CONPORT_SETTINGS_FORBID_ROOT: run the test in a temporary folder`
+        )
+        return true
+      })
+    )
+  }
+  // A root beside the forbidden path, not inside it, is read.
+  await forbidding(`${f.root}-beside`, async () => {
+    assert.deepEqual(await contextOfRepo(worker), [{ project: 'shop-api', source: 'file', lines: [] }])
+  })
   await worker.deactivate()
 })
 
@@ -333,12 +638,12 @@ test('without the repository setting the project is asked once and remembered', 
   assert.deepEqual(await listed(), [[null, null]])
   assert.deepEqual(await worker.request('project.set', { root: f.root, project: ' shop-api ' }), {
     ok: true,
-    data: { root: f.root, project: 'shop-api', source: 'stored' }
+    data: { root: f.root, project: 'shop-api', source: 'stored', lines: [], filesRead: true }
   })
   assert.deepEqual(await listed(), [['shop-api', 'stored']])
   assert.deepEqual(await worker.request('project.forget', { root: f.root }), {
     ok: true,
-    data: { root: f.root, project: null, source: null }
+    data: { root: f.root, project: null, source: null, lines: [], filesRead: true }
   })
   assert.deepEqual(await listed(), [[null, null]])
   await worker.deactivate()
@@ -526,10 +831,10 @@ test('projects follow the orca repo list order and names', async () => {
   assert.deepEqual(await worker.request('projects.list'), {
     ok: true,
     data: [
-      { name: 'Billing', root: billing, kind: 'git', project: 'billing-api', source: 'stored', focused: false },
-      { name: 'Shop', root: f.root, kind: 'git', project: 'shop-api', source: 'repository', focused: true },
-      { name: 'Notes', root: notes, kind: 'folder', project: null, source: null, focused: false },
-      { name: 'Docs', root: docs, kind: 'git', project: null, source: null, focused: false }
+      { name: 'Billing', root: billing, kind: 'git', project: 'billing-api', source: 'stored', lines: [], filesRead: true, focused: false },
+      { name: 'Shop', root: f.root, kind: 'git', project: 'shop-api', source: 'repository', lines: [], filesRead: true, focused: true },
+      { name: 'Notes', root: notes, kind: 'folder', project: null, source: null, lines: [], filesRead: false, focused: false },
+      { name: 'Docs', root: docs, kind: 'git', project: null, source: null, lines: [], filesRead: true, focused: false }
     ]
   })
   // The focused workspace is matched to a project of the list by its repository id.

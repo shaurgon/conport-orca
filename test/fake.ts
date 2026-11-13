@@ -10,12 +10,20 @@ import { createWorker } from '../src/worker'
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), 'fake-cli.mjs')
 
+// Every test that drives the worker imports this file: none may read the ConPort settings of the
+// repository the tests run in, whose `.conport.json` would stand in for the test's own.
+process.env.CONPORT_SETTINGS_FORBID_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+
 export interface FakeAnswer {
   /** The start of the joined args this answer is for, e.g. `epic list --project`. */
   match: string
   code?: number
   stdout?: string
   stderr?: string
+  /** What the program writes in place of `stderr` unless asked in English (LC_ALL=C and no LANGUAGE). */
+  translatedStderr?: string
+  /** How long the program waits before it answers. */
+  delayMs?: number
 }
 
 export interface Fake {
@@ -37,8 +45,10 @@ export interface Fake {
   conportCalls(): string[][]
   orcaCalls(): string[][]
   gitCalls(): string[][]
+  /** The user env file of the fake machine (`~/.config/conport/.env`); none until a test writes it. */
+  userEnv: string
   /** How the worker of this machine starts its programs, for a worker with one of them changed. */
-  deps: { conport: readonly string[]; orca: readonly string[]; git: readonly string[] }
+  deps: { conport: readonly string[]; orca: readonly string[]; git: readonly string[]; userEnv: string }
 }
 
 /**
@@ -152,7 +162,8 @@ export function fake(conport: FakeAnswer[], orca?: Answers, git?: Answers): Fake
       FAKE_CLI,
       scenario('orca', [...answersOf(orca), ...orcaRepo(root, focused, pluginRepo)])
     ],
-    git: [process.execPath, FAKE_CLI, scenario('git', answersOf(git))]
+    git: [process.execPath, FAKE_CLI, scenario('git', answersOf(git))],
+    userEnv: join(dir, 'conport.env')
   }
   const { activate, deactivate } = createWorker(deps)
   const workspaces = [
@@ -181,6 +192,7 @@ export function fake(conport: FakeAnswer[], orca?: Answers, git?: Answers): Fake
     conportCalls: () => calls('conport'),
     orcaCalls: () => calls('orca'),
     gitCalls: () => calls('git'),
+    userEnv: deps.userEnv,
     deps
   }
 }
