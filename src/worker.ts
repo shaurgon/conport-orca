@@ -47,7 +47,7 @@ interface WorktreeRow {
 }
 
 const TRUNCATED = (): { ok: false; error: { code: string; message: string; action: string } } =>
-  fail('workspaces_truncated', 'Orca отдала неполный список рабочих мест', 'уберите лишние рабочие места из Orca и повторите')
+  fail('workspaces_truncated', 'Orca returned an incomplete list of workspaces', 'Remove the workspaces you do not need from Orca and try again.')
 
 /** More rows than a repository has working copies: `orca worktree list` is asked for all of them. */
 const WORKTREE_LIMIT = 10_000
@@ -62,8 +62,8 @@ const TASKS_PAGE = 200
 const COPIES_TRUNCATED = (): { ok: false; error: { code: string; message: string; action: string } } =>
   fail(
     'workspaces_truncated',
-    `список рабочих копий репозитория не поместился в ответ Orca: их больше ${WORKTREE_LIMIT}`,
-    'удалите ненужные рабочие копии репозитория в Orca и повторите'
+    `The repository's working copies did not fit in Orca's answer: there are more than ${WORKTREE_LIMIT}`,
+    'Delete the working copies you do not need in Orca and try again.'
   )
 
 const normalize = (path: string): string => path.replace(/\/+$/, '')
@@ -115,7 +115,7 @@ export function createWorker(deps: WorkerDeps): {
         return said ? refuse(answer.error.code, said) : answer
       }
       const { text } = answer.data
-      if (typeof text !== 'string' || text === '') return fail('bad_output', 'conport ответил без текста задания', 'обновите conport')
+      if (typeof text !== 'string' || text === '') return fail('bad_output', "conport answered without the task's text", 'Update conport.')
       return ok(text)
     }
 
@@ -124,7 +124,7 @@ export function createWorker(deps: WorkerDeps): {
       const answer = interpret('orca', await runProcess([...deps.orca, ...args, '--json']), basename(deps.orca[0] ?? ''))
       if (!answer.ok) return answer
       const result = (answer.data as { result?: unknown }).result
-      if (result === undefined) return fail('bad_output', 'orca ответил без result', 'обновите Orca')
+      if (result === undefined) return fail('bad_output', 'orca answered without result', 'Update Orca.')
       return ok(result as T)
     }
 
@@ -138,8 +138,8 @@ export function createWorker(deps: WorkerDeps): {
     ): Promise<Result<string>> => {
       const ambiguous = fail(
         'workspace_ambiguous',
-        `в Orca несколько рабочих мест «${focus.displayName}», какое в фокусе — не понять`,
-        'откройте терминал в нужном рабочем месте Orca и повторите'
+        `Orca has several workspaces named “${focus.displayName}” and cannot tell which one is in focus`,
+        'Open a terminal in the right Orca workspace and try again.'
       )
       const focused = new Set(focus.terminals.map((t) => t.id))
       if (focused.size === 0) return ambiguous
@@ -168,7 +168,7 @@ export function createWorker(deps: WorkerDeps): {
     const focusedPath = async (): Promise<Result<string>> => {
       const focus = await orca.host.call('workspace.readContext')
       if (focus === null) {
-        return fail('no_workspace', 'в Orca нет рабочего места в фокусе', 'откройте рабочее место репозитория')
+        return fail('no_workspace', 'Orca has no workspace in focus', 'Open a repository workspace.')
       }
       const { workspaces, truncated } = await orca.host.call('workspace.list')
       // The focus names no path: name and branch must point at one workspace, or nothing is picked.
@@ -179,7 +179,7 @@ export function createWorker(deps: WorkerDeps): {
       if (workspace && others.length === 0) return ok(workspace.path)
       if (workspace) return byTerminals(candidates, focus)
       if (truncated) return TRUNCATED()
-      return fail('no_workspace', `рабочего места «${focus.displayName}» нет в списке Orca`, 'откройте рабочее место репозитория')
+      return fail('no_workspace', `The workspace “${focus.displayName}” is not in Orca's list`, 'Open a repository workspace.')
     }
 
     /** The id orca gives the repository of the workspace in focus. */
@@ -189,7 +189,7 @@ export function createWorker(deps: WorkerDeps): {
       const shown = await orcaCli<{ worktree?: { repoId?: string } }>(['worktree', 'show', '--worktree', `path:${focused.data}`])
       if (!shown.ok) return shown
       const repoId = shown.data.worktree?.repoId
-      if (!repoId) return fail('no_repository', 'рабочее место в фокусе не принадлежит репозиторию', 'откройте рабочее место репозитория')
+      if (!repoId) return fail('no_repository', 'The workspace in focus belongs to no repository', 'Open a repository workspace.')
       return ok(repoId)
     }
 
@@ -207,7 +207,7 @@ export function createWorker(deps: WorkerDeps): {
       const workspace = workspaces.find((w) => normalize(w.path) === normalize(root))
       if (!workspace) {
         if (truncated) return TRUNCATED()
-        return fail('root_not_open', `корень репозитория ${root} не открыт в Orca`, 'добавьте репозиторий в Orca')
+        return fail('root_not_open', `The repository root ${root} is not open in Orca`, 'Add the repository to Orca.')
       }
       const { terminalId } = await orca.host.call('terminal.create', { workspaceId: workspace.id, title, command })
       return ok(terminalId)
@@ -220,7 +220,7 @@ export function createWorker(deps: WorkerDeps): {
       ])
       if (!created.ok) return created
       const handle = created.data.terminal?.handle
-      if (!handle) return fail('bad_output', 'orca открыла терминал и не назвала его', 'обновите Orca')
+      if (!handle) return fail('bad_output', 'orca opened a terminal and did not name it', 'Update Orca.')
       return ok(handle)
     }
 
@@ -237,7 +237,7 @@ export function createWorker(deps: WorkerDeps): {
       if (listed.code !== 0) {
         // What git said, as it said it.
         const said = listed.stderr.split('\n').map((line) => line.trim()).filter(Boolean).at(-1)
-        return fail('git_failed', said ?? `git: код выхода ${listed.code}`, 'проверьте репозиторий командой git status в его корне и повторите')
+        return fail('git_failed', said ?? `git: exit code ${listed.code}`, 'Check the repository with git status in its root and try again.')
       }
       const refs = listed.stdout.split('\n').map((line) => line.trim())
       // The pattern of the branch itself lists the branches under it too: only the exact name counts.
@@ -260,7 +260,7 @@ export function createWorker(deps: WorkerDeps): {
       const main = all.find((row) => row.isMainWorktree === true && normalize(row.path ?? '') === normalize(root))
       if (!main?.repoId) {
         if (listed.data.truncated) return COPIES_TRUNCATED()
-        return fail('bad_output', 'orca не назвала главную рабочую копию репозитория', 'обновите Orca')
+        return fail('bad_output', "orca did not name the repository's main working copy", 'Update Orca.')
       }
       const base = branchName(main.branch ?? null) || null
       const rows = all
@@ -277,7 +277,7 @@ export function createWorker(deps: WorkerDeps): {
       if (!copies.ok) return copies
       const { base } = copies.data
       if (base === null) {
-        return fail('root_detached', 'главная рабочая копия репозитория не на ветке: базы для эпика нет', 'переключите главную рабочую копию на ветку')
+        return fail('root_detached', "The repository's main working copy is not on a branch, so the epic has no base", 'Check out a branch in the main working copy.')
       }
       return ok({ ...copies.data, base })
     }
@@ -320,7 +320,7 @@ export function createWorker(deps: WorkerDeps): {
 
     orca.panels.handle('project.set', async ({ root, project }) => {
       const value = project.trim()
-      if (value === '') return fail('empty_project', 'проект не назван', 'впишите имя или handle проекта')
+      if (value === '') return fail('empty_project', 'No project is named', "Enter the project's name or handle.")
       await orca.storage.set(`project:${root}`, value)
       return ok(await contextOf(root))
     })
@@ -377,15 +377,15 @@ export function createWorker(deps: WorkerDeps): {
      * The command of an agent that can be told its task as its first argument and is found:
      * only such an agent starts a talk with the task it is given.
      */
-    const agentCommand = async (root: string, agent: string, noun: 'агент' | 'харнесс' = 'агент'): Promise<Result<string>> => {
+    const agentCommand = async (root: string, agent: string, noun: 'agent' | 'harness' = 'agent'): Promise<Result<string>> => {
       if (!PREPARE_AGENTS.includes(agent)) return refuse('agent_cannot_prepare', REFUSED.agentCannotPrepare(noun, agent))
       const kinds = await agentKinds(root)
       if (!kinds.ok) return kinds
       const kind = kinds.data.find((a) => a.id === agent)
       if (!kind?.found) {
-        return noun === 'агент'
-          ? fail('agent_not_found', `агент «${agent}» не найден`, AGENT_MISSING_ACTION)
-          : fail('agent_not_found', `харнесс «${agent}» не найден на машине`, HARNESS_MISSING_ACTION)
+        return noun === 'agent'
+          ? fail('agent_not_found', `Agent “${agent}” not found`, AGENT_MISSING_ACTION)
+          : fail('agent_not_found', `Harness “${agent}” not found on this machine`, HARNESS_MISSING_ACTION)
       }
       return ok(kind.command)
     }
@@ -437,17 +437,17 @@ export function createWorker(deps: WorkerDeps): {
       if (way === 'sdd' && harness === 'claude' && !types.every((type) => typeof type === 'string' && ROLE_TYPE_FORM.test(type))) {
         return roleInvalid
       }
-      const command = await agentCommand(root, harness, 'харнесс')
+      const command = await agentCommand(root, harness, 'harness')
       if (!command.ok) return command
 
       // An epic begun one way is not taken over by the other: their branches do not meet.
       const branches = await epicBranches(root, epic)
       if (!branches.ok) return branches
       if (way === 'sdd' && branches.data.workflow) {
-        return fail('epic_started_workflow', `выбран навык SDD, а ветки epic${epic}/… уже есть: эпик начат потоком`, 'выберите способ «/conport:epic»')
+        return fail('epic_started_workflow', `The SDD skill is chosen, but branches epic${epic}/… are there already: the epic was started by the workflow`, 'Choose the /conport:epic mode.')
       }
       if (way === 'workflow' && branches.data.sdd) {
-        return fail('epic_started_sdd', `выбран поток, а ветка epic-${epic} уже есть: эпик начат навыком SDD`, 'выберите способ «Навык SDD»')
+        return fail('epic_started_sdd', `The workflow is chosen, but the branch epic-${epic} is there already: the epic was started by the SDD skill`, 'Choose the SDD skill mode.')
       }
 
       const trees = await worktreesOf(root)
@@ -462,7 +462,7 @@ export function createWorker(deps: WorkerDeps): {
           // The copy may be among the rows cut off: none is created on a part of the list.
           if (!trees.data.complete) return COPIES_TRUNCATED()
           if (branches.data.sdd) {
-            return fail('epic_branch_taken', `ветка ${branch} есть, а рабочей копии у неё нет`, 'откройте ветку рабочим местом в Orca')
+            return fail('epic_branch_taken', `The branch ${branch} is there, but it has no working copy`, 'Open the branch as a workspace in Orca.')
           }
           // No `--setup`: the setting of the repository in Orca decides.
           const created = await orcaCli<{ worktree?: { path?: string } }>([
@@ -471,7 +471,7 @@ export function createWorker(deps: WorkerDeps): {
           ])
           if (!created.ok) return created
           worktree = created.data.worktree?.path ?? null
-          if (worktree === null) return fail('bad_output', 'orca создала рабочую копию и не назвала её путь', 'обновите Orca')
+          if (worktree === null) return fail('bad_output', 'orca created a working copy and did not name its path', 'Update Orca.')
         }
       }
       // The CLI checks the epic again, now that the place of the work is known.
@@ -545,8 +545,8 @@ export function createWorker(deps: WorkerDeps): {
       if (listed.data.truncated === true) {
         return fail(
           'terminals_truncated',
-          'список терминалов рабочего места не поместился в ответ Orca',
-          'закройте лишние терминалы этого рабочего места в Orca и нажмите «Обновить»'
+          "The workspace's terminals did not fit in Orca's answer",
+          'Close the terminals you do not need in this Orca workspace and press Refresh.'
         )
       }
       return ok(null)
@@ -559,7 +559,7 @@ export function createWorker(deps: WorkerDeps): {
     const byHandle = (project: unknown): Result<string> =>
       typeof project === 'string' && HANDLE_FORM.test(project)
         ? ok(project)
-        : fail('project_not_handle', 'проект назван не по handle: выбор и сессия эпика хранятся под handle проекта', 'нажмите «Обновить»')
+        : fail('project_not_handle', "The project is not named by its handle: the choice and the epic's session are kept under the project's handle", 'Press Refresh.')
 
     /** The working copy of the epic and the terminal of its live session, as orca tells them now. */
     const liveSession = async (
@@ -617,7 +617,7 @@ export function createWorker(deps: WorkerDeps): {
           root
         )
         if (!page.ok) return page
-        if (!Array.isArray(page.data.tasks)) return fail('bad_output', 'conport ответил без списка задач', 'обновите conport')
+        if (!Array.isArray(page.data.tasks)) return fail('bad_output', 'conport answered without a list of tasks', 'Update conport.')
         tasks.push(...page.data.tasks.map(({ id, title, status }) => ({ id, title, status })))
         // A page that comes empty ends the reading: tasks removed meanwhile leave the total unreached.
         if (page.data.tasks.length === 0 || tasks.length >= (page.data.total ?? 0)) break
@@ -627,7 +627,7 @@ export function createWorker(deps: WorkerDeps): {
     })
 
     orca.panels.handle('subagents.get', async ({ root, harness }) => {
-      if (typeof harness !== 'string' || harness.trim() === '') return fail('harness_invalid', 'харнесс не назван', 'выберите харнесс эпика')
+      if (typeof harness !== 'string' || harness.trim() === '') return fail('harness_invalid', 'No harness is named', "Choose the epic's harness.")
       return conport<SubagentList>(['epic', 'subagents', '--harness', harness, '--json'], root)
     })
 
@@ -640,7 +640,7 @@ export function createWorker(deps: WorkerDeps): {
       const live = await liveSession(root, epic, await chosenFor(handle.data, epic))
       if (!live.ok) return live
       if (live.data.terminal === null) {
-        return fail('session_gone', `у эпика ${epic} нет живой сессии: её терминал закрыт или агент в нём завершился`, 'нажмите «Обновить»')
+        return fail('session_gone', `Epic ${epic} has no live session: its terminal is closed or its agent has exited`, 'Press Refresh.')
       }
       const shown = await switchTo(live.data.terminal)
       return shown.ok ? ok(null) : shown
@@ -654,7 +654,7 @@ export function createWorker(deps: WorkerDeps): {
     // A task outside the epics, to do, to review or to fix: the CLI reads it afresh, so a task done
     // or taken meanwhile is not handed again. It takes only an agent that can be given a task.
     orca.panels.handle('task.hand', async ({ project, root, task, agent, mode }) => {
-      if (!PREPARE_AGENTS.includes(agent)) return refuse('agent_cannot_prepare', REFUSED.agentCannotPrepare('агент', agent))
+      if (!PREPARE_AGENTS.includes(agent)) return refuse('agent_cannot_prepare', REFUSED.agentCannotPrepare('agent', agent))
       const order = await promptText(taskPromptArgs({ task, project, mode, agent, root }), root, { command: 'task', task, mode })
       if (!order.ok) return order
       const title = `conport ${{ do: 'task', review: 'review', fix: 'fix' }[mode]} ${task}`

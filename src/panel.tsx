@@ -64,6 +64,7 @@ import {
   HARNESS_MISSING_ACTION,
   NO_MILESTONE,
   NO_TASK_AGENT,
+  oneLine,
   PREPARE_HINT,
   PREPARE_STATE,
   prepareNotice,
@@ -209,7 +210,7 @@ async function act<T>(call: () => Promise<Result<T>>, then: (data: T) => void, s
     else set(refusal, answer.error)
   } catch {
     // The worker's exception is in its own log; the panel says only that it did not answer.
-    if (still()) set(refusal, { code: 'worker', message: 'воркер плагина не ответил', action: 'закройте и откройте панель снова' })
+    if (still()) set(refusal, { code: 'worker', message: "The plugin's worker did not answer", action: 'Close the panel and open it again.' })
   } finally {
     set(busy, false)
   }
@@ -565,7 +566,7 @@ export function setup(ctx: PanelContext): void {
   void load()
 }
 
-/** A refused action: said in Russian by its code, never in the English of the CLI. */
+/** A refused action: said in the panel's words by its code, never in the words the CLI prints for a terminal. */
 function RefusalBox({ error }: { error: Refusal }) {
   const text = refusalText(error)
   return (
@@ -583,8 +584,8 @@ function RefusalBox({ error }: { error: Refusal }) {
 /** The ConPort project of an Orca project as the picker names it: by name, never by handle. */
 function bindingNote(project: OrcaProject): string {
   if (project.kind !== 'git') return FOLDER_NOTE
-  if (project.project === null) return 'Нет проекта ConPort'
-  return HANDLE_FORM.test(project.project) ? 'ConPort привязан' : `ConPort · ${project.project}`
+  if (project.project === null) return 'No ConPort project'
+  return HANDLE_FORM.test(project.project) ? 'ConPort bound' : `ConPort · ${project.project}`
 }
 
 function projectItem(project: OrcaProject, isCurrent: boolean) {
@@ -597,7 +598,7 @@ function projectItem(project: OrcaProject, isCurrent: boolean) {
       <ListItem key={key} title={project.name} description={bindingNote(project)} icon="folder" current={isCurrent}>
         <Row>
           <Button size="xs" variant="outline" disabled={read(busy)} onPress={() => chooseProject(project.root)}>
-            Привязать
+            Bind
           </Button>
         </Row>
       </ListItem>
@@ -607,7 +608,7 @@ function projectItem(project: OrcaProject, isCurrent: boolean) {
     <ListItem
       key={key}
       title={project.name}
-      description={project.focused ? `${bindingNote(project)} · в фокусе` : bindingNote(project)}
+      description={project.focused ? `${bindingNote(project)} · in focus` : bindingNote(project)}
       icon="folder"
       current={isCurrent}
       onPress={() => chooseProject(project.root)}
@@ -624,26 +625,26 @@ function ProjectPicker({ list }: { list: OrcaProject[] }) {
     <Stack gap="sm">
       <Input
         type="search"
-        label="Найти проект"
+        label="Find project"
         labelHidden
-        placeholder="Найти проект"
+        placeholder="Find project"
         value={read(projectQuery)}
         onChange={(value) => set(projectQuery, value)}
       />
       <Text size="xs" muted>
-        Проекты Orca — в том же порядке, что в боковой панели
+        Orca projects, in sidebar order
       </Text>
       {shown.length === 0 ? (
         <Text size="sm" muted>
-          Ни один проект не подходит.
+          No project matches.
         </Text>
       ) : (
-        <List label="Проекты">{shown.map((project) => projectItem(project, project.root === root))}</List>
+        <List label="Projects">{shown.map((project) => projectItem(project, project.root === root))}</List>
       )}
       {current()?.source === 'stored' ? (
         <Row>
           <Button size="xs" variant="ghost" disabled={read(busy)} onPress={forgetProject}>
-            Сменить проект ConPort
+            Change ConPort project
           </Button>
         </Row>
       ) : null}
@@ -654,15 +655,15 @@ function ProjectPicker({ list }: { list: OrcaProject[] }) {
 /** The chosen project, opening onto Orca's projects, and the refresh of the whole panel. */
 function Header() {
   const list = read(projects)
-  const refresh = <IconButton icon="refresh" label="Обновить" variant="outline" disabled={read(busy)} onPress={load} />
-  if (list === null) return <Skeleton shape="text" lines={2} label="Читаю проекты Orca" />
+  const refresh = <IconButton icon="refresh" label="Refresh" variant="outline" disabled={read(busy)} onPress={load} />
+  if (list === null) return <Skeleton shape="text" lines={2} label="Loading projects…" />
   if (!list.ok) {
     return (
       <Stack gap="xs">
         <RefusalBox error={list.error} />
         <Row>
           <Button size="sm" variant="outline" icon="refresh" onPress={load}>
-            Повторить
+            Retry
           </Button>
         </Row>
       </Stack>
@@ -672,7 +673,7 @@ function Header() {
     return (
       <Stack gap="sm">
         <Row justify="end">{refresh}</Row>
-        <EmptyState icon="folder" title="В Orca нет проектов" description="Добавьте репозиторий в Orca и нажмите «Обновить»." />
+        <EmptyState icon="folder" title="Orca has no projects" description="Add a repository to Orca and press Refresh." />
       </Stack>
     )
   }
@@ -684,8 +685,8 @@ function Header() {
       <Box grow>
         <Collapsible
           key="project-picker"
-          title={project?.name ?? 'Выберите проект'}
-          description={project ? bindingNote(project) : 'Проект не выбран'}
+          title={project?.name ?? 'Choose a project'}
+          description={project ? bindingNote(project) : 'No project chosen'}
           open={open}
           onChange={(value) => set(pickerOpen, value)}
         >
@@ -700,19 +701,19 @@ function Header() {
 function BindCard() {
   return (
     <Card
-      title="Проект ConPort"
-      description="В .claude/settings.local.json репозитория нет CONPORT_PROJECT_NAME. Назовите проект один раз — панель запомнит его для этого репозитория."
+      title="ConPort project"
+      description="The repository's .claude/settings.local.json has no CONPORT_PROJECT_NAME. Name the project once — the panel remembers it for this repository."
     >
       <Row gap="xs" align="end">
         <Input
-          label="Проект ConPort"
-          placeholder="имя или handle"
+          label="ConPort project"
+          placeholder="name or handle"
           value={read(projectDraft)}
           onChange={(v) => set(projectDraft, v)}
           onSubmit={(v) => void rememberProject(v)}
         />
         <Button variant="solid" tone="accent" disabled={read(busy)} onPress={() => rememberProject(read(projectDraft))}>
-          Запомнить
+          Remember
         </Button>
       </Row>
     </Card>
@@ -772,7 +773,7 @@ function launchRow(epic: EpicSummary) {
       icon="layers"
       onPress={() => openEpic(epic.id)}
     >
-      {state.share === null ? null : <Progress label={`Закрыто ${state.closed} из ${state.total}`} labelHidden value={state.share} />}
+      {state.share === null ? null : <Progress label={`${state.closed} of ${state.total} closed`} labelHidden value={state.share} />}
     </ListItem>
   )
 }
@@ -782,8 +783,8 @@ function LaunchTab({ list }: { list: EpicList }) {
     return (
       <EmptyState
         icon="layers"
-        title="В проекте нет эпиков"
-        description="Эпик можно запустить, когда у него есть спецификация и план в ConPort."
+        title="The project has no epics"
+        description="An epic can start once it has a spec and a plan in ConPort."
       />
     )
   }
@@ -791,7 +792,7 @@ function LaunchTab({ list }: { list: EpicList }) {
   if (runnable.length === 0) {
     return (
       <Text size="sm" muted>
-        Ни один эпик не готов к запуску: подготовьте его во вкладке «Подготовить».
+        No epic is ready to run — prepare one in the Prepare tab.
       </Text>
     )
   }
@@ -815,7 +816,7 @@ function AgentsNote() {
   if (taskAgents(kinds.data.agents).length > 0) return null
   return (
     <Text size="xs" muted>
-      {`${NO_TASK_AGENT} ${AGENT_MISSING_ACTION}`}
+      {oneLine({ what: NO_TASK_AGENT, action: AGENT_MISSING_ACTION })}
     </Text>
   )
 }
@@ -844,7 +845,7 @@ function prepareRow(epic: EpicSummary) {
           disabled={!canHand()}
           onPress={() => openSheet({ kind: missing, epic })}
         >
-          {missing === 'spec' ? 'Подготовить' : 'Написать план'}
+          {missing === 'spec' ? 'Prepare' : 'Write plan'}
         </Button>
       </Row>
     </ListItem>
@@ -861,7 +862,7 @@ function PrepareTab({ list }: { list: EpicList }) {
       <AgentsNote />
       {toPrepare.length === 0 ? (
         <Text size="sm" muted>
-          Готовить нечего: у каждого эпика есть спецификация и план.
+          Nothing to prepare: every epic has a spec and a plan.
         </Text>
       ) : (
         byMilestone(toPrepare).map((group) => (
@@ -877,16 +878,16 @@ function PrepareTab({ list }: { list: EpicList }) {
 
 /** The button of a task by what it can be handed for, the key of its test id and the icon of its row. */
 const HAND_ACTIONS: Record<HandMode, { key: string; label: string; icon: 'check' | 'flag' | 'agent' }> = {
-  do: { key: 'hand', label: 'Отдать агенту', icon: 'flag' },
-  review: { key: 'review', label: 'Проверить', icon: 'check' },
-  fix: { key: 'fix', label: 'Исправить', icon: 'agent' }
+  do: { key: 'hand', label: 'Hand to agent', icon: 'flag' },
+  review: { key: 'review', label: 'Review', icon: 'check' },
+  fix: { key: 'fix', label: 'Fix', icon: 'agent' }
 }
 
 /** The sheet of a task by what it is handed for: its title and who takes it. */
 const HAND_SHEETS: Record<HandMode, { title: string; who: string }> = {
-  do: { title: 'Отдать агенту', who: 'Кто возьмёт задачу' },
-  review: { title: 'Проверить', who: 'Кто проверит' },
-  fix: { title: 'Исправить', who: 'Кто исправит' }
+  do: { title: 'Hand to agent', who: 'Who takes the task' },
+  review: { title: 'Review', who: 'Who reviews' },
+  fix: { title: 'Fix', who: 'Who fixes' }
 }
 
 function taskRow(task: OutsideTask) {
@@ -916,15 +917,15 @@ function taskRow(task: OutsideTask) {
 
 function TasksTab() {
   const outside = read(tasks)
-  if (outside === null) return <Skeleton shape="text" lines={3} label="Читаю задачи" />
+  if (outside === null) return <Skeleton shape="text" lines={3} label="Loading tasks…" />
   if (!outside.ok) return <RefusalBox error={outside.error} />
   if (outside.data.length === 0) {
-    return <EmptyState icon="check" title="Задач вне эпиков нет" description="Открытые задачи проекта вне эпиков появятся здесь." />
+    return <EmptyState icon="check" title="No tasks outside the epics" description="The project's open tasks outside the epics appear here." />
   }
   const groups: Array<[string, OutsideTask[]]> = [
-    ['Ждут проверки', outside.data.filter((t) => t.status === 'REVIEW')],
-    ['В работе', outside.data.filter((t) => t.status === 'IN_PROGRESS')],
-    ['К выполнению', outside.data.filter((t) => t.status === 'TODO')]
+    ['In review', outside.data.filter((t) => t.status === 'REVIEW')],
+    ['In progress', outside.data.filter((t) => t.status === 'IN_PROGRESS')],
+    ['To do', outside.data.filter((t) => t.status === 'TODO')]
   ]
   return (
     <Stack gap="md">
@@ -948,20 +949,20 @@ function Sections({ list }: { list: EpicList }) {
   const outside = read(tasks)
   return (
     <Tabs
-      label="Разделы"
+      label="Sections"
       value={shown}
       onChange={(value) => {
         set(tab, value)
         set(notice, null)
       }}
     >
-      <Tab value="launch" label={`К запуску · ${list.epics.filter((e) => e.runnable).length}`}>
+      <Tab value="launch" label={`Ready to run · ${list.epics.filter((e) => e.runnable).length}`}>
         {shown === 'launch' ? <LaunchTab list={list} /> : null}
       </Tab>
-      <Tab value="prepare" label={`Подготовить · ${list.epics.filter((e) => !e.runnable).length}`}>
+      <Tab value="prepare" label={`Prepare · ${list.epics.filter((e) => !e.runnable).length}`}>
         {shown === 'prepare' ? <PrepareTab list={list} /> : null}
       </Tab>
-      <Tab value="tasks" label={outside?.ok ? `Задачи · ${outside.data.length}` : 'Задачи'}>
+      <Tab value="tasks" label={outside?.ok ? `Tasks · ${outside.data.length}` : 'Tasks'}>
         {shown === 'tasks' ? <TasksTab /> : null}
       </Tab>
     </Tabs>
@@ -977,12 +978,12 @@ function SheetCard({ open }: { open: Sheet }) {
   const text =
     open.kind === 'spec' || open.kind === 'plan'
       ? {
-          title: `${open.kind === 'spec' ? 'Подготовить' : 'Написать план'} «${open.epic.title}»`,
-          description: `${open.epic.id} · ${open.kind === 'spec' ? 'нет спецификации' : 'нет плана'}`,
-          who: 'Кто подготовит'
+          title: `${open.kind === 'spec' ? 'Prepare' : 'Write plan'} “${open.epic.title}”`,
+          description: `${open.epic.id} · ${open.kind === 'spec' ? 'no spec' : 'no plan'}`,
+          who: 'Who prepares'
         }
       : {
-          title: `${HAND_SHEETS[open.kind].title} «${open.task.title}»`,
+          title: `${HAND_SHEETS[open.kind].title} “${open.task.title}”`,
           description: `${open.task.id} · ${taskState(open.task).toLowerCase()}`,
           who: HAND_SHEETS[open.kind].who
         }
@@ -1001,13 +1002,13 @@ function SheetCard({ open }: { open: Sheet }) {
           </Stack>
           {able.length === 0 ? (
             <Text size="xs" muted>
-              {`${NO_TASK_AGENT} ${AGENT_MISSING_ACTION}`}
+              {oneLine({ what: NO_TASK_AGENT, action: AGENT_MISSING_ACTION })}
             </Text>
           ) : (
             <RadioGroup
               label={text.who}
               options={able.map((a) =>
-                a.id === last ? { value: a.id, label: a.label, description: 'в прошлый раз' } : { value: a.id, label: a.label }
+                a.id === last ? { value: a.id, label: a.label, description: 'last time' } : { value: a.id, label: a.label }
               )}
               value={read(sheetAgent) ?? ''}
               onChange={pickSheetAgent}
@@ -1015,7 +1016,7 @@ function SheetCard({ open }: { open: Sheet }) {
           )}
           <Row gap="xs" justify="end">
             <Button variant="ghost" onPress={() => set(sheet, null)}>
-              Отмена
+              Cancel
             </Button>
             <Button
               variant="solid"
@@ -1024,7 +1025,7 @@ function SheetCard({ open }: { open: Sheet }) {
               disabled={read(busy) || read(sheetAgent) === null}
               onPress={submitSheet}
             >
-              Открыть в терминале
+              Open in terminal
             </Button>
           </Row>
         </Stack>
@@ -1040,7 +1041,7 @@ function WayPart({ choice }: { choice: Choice }) {
   return (
     <Stack gap="xs">
       <RadioGroup
-        label="Способ"
+        label="Mode"
         orientation="horizontal"
         options={WAYS.map((way) => ({ value: way, label: WAY_LABELS[way] }))}
         value={choice.way}
@@ -1065,27 +1066,27 @@ const harnessFound = (list: AgentKind[], harness: string): boolean => taskAgents
 function harnessOptions(list: AgentKind[], current: string): Array<{ value: string; label: string; disabled?: boolean }> {
   const able = list.filter((a) => PREPARE_AGENTS.includes(a.id))
   const options = able.map((a) =>
-    a.found ? { value: a.id, label: a.label } : { value: a.id, label: `${a.label} — не найден`, disabled: true }
+    a.found ? { value: a.id, label: a.label } : { value: a.id, label: `${a.label} — not found`, disabled: true }
   )
-  return able.some((a) => a.id === current) ? options : [...options, { value: current, label: `${current} — не найден`, disabled: true }]
+  return able.some((a) => a.id === current) ? options : [...options, { value: current, label: `${current} — not found`, disabled: true }]
 }
 
 /** The harness of the epic: the agent that is opened in its terminal. */
 function HarnessPart({ choice }: { choice: Choice }) {
   const kinds = read(agents)
-  if (kinds === null) return <Skeleton shape="block" label="Читаю харнессы" />
+  if (kinds === null) return <Skeleton shape="block" label="Loading harnesses…" />
   if (!kinds.ok) return <RefusalBox error={kinds.error} />
   return (
     <Stack gap="xs">
       <Select
-        label="Харнесс"
+        label="Harness"
         options={harnessOptions(kinds.data.agents, choice.harness)}
         value={choice.harness}
         onChange={chooseHarness}
       />
       {harnessFound(kinds.data.agents, choice.harness) ? null : (
         <Text key="harness-missing" size="xs" muted>
-          {`Харнесс не найден: ${HARNESS_MISSING_ACTION}`}
+          {oneLine({ what: 'Harness not found', action: HARNESS_MISSING_ACTION })}
         </Text>
       )}
     </Stack>
@@ -1095,11 +1096,11 @@ function HarnessPart({ choice }: { choice: Choice }) {
 /** The subagent type of each role, or the default types with why none can be chosen. */
 function RolesPart({ choice }: { choice: Choice }) {
   const lists = roleLists(choice)
-  if (lists === null) return <Skeleton shape="block" label="Читаю типы субагентов" />
+  if (lists === null) return <Skeleton shape="block" label="Loading subagent types…" />
   return (
     <Stack gap="sm">
       <Text size="sm" weight="semibold">
-        Роли
+        Roles
       </Text>
       <Grid columns={2} gap="md">
         {ROLE_KEYS.map((key) => {
@@ -1148,7 +1149,7 @@ function StartPart({ epic, state, choice }: { epic: number; state: EpicSession; 
   const blocked = read(busy) || !canStart(choice.harness) || needsClaude || roleLists(choice) === null
   const needs = needsClaude ? (
     <Text key="way-needs-claude" size="xs" muted>
-      {`${WAY_NEEDS_CLAUDE.what}: ${WAY_NEEDS_CLAUDE.action}`}
+      {oneLine(WAY_NEEDS_CLAUDE)}
     </Text>
   ) : null
   if (state.alive) {
@@ -1159,23 +1160,23 @@ function StartPart({ epic, state, choice }: { epic: number; state: EpicSession; 
         </Callout>
         <Row gap="xs" wrap>
           <Button variant="solid" tone="accent" icon="terminal" disabled={read(busy)} onPress={showTerminal}>
-            Показать терминал
+            Show terminal
           </Button>
           <Button variant="outline" icon="play" disabled={blocked} onPress={() => set(confirmAgain, true)}>
-            Запустить заново
+            Start again
           </Button>
         </Row>
         {needs}
         {read(confirmAgain) ? (
-          <Callout key="confirm-again" tone="warning" title={`Запустить эпик ${epic} заново?`}>
+          <Callout key="confirm-again" tone="warning" title={`Start epic ${epic} again?`}>
             <Stack gap="xs">
               <Text size="xs">{RESTART_NOTE}</Text>
               <Row gap="xs">
                 <Button variant="solid" tone="accent" disabled={blocked} onPress={start}>
-                  Да, запустить
+                  Yes, start
                 </Button>
                 <Button variant="ghost" onPress={() => set(confirmAgain, false)}>
-                  Отмена
+                  Cancel
                 </Button>
               </Row>
             </Stack>
@@ -1192,7 +1193,7 @@ function StartPart({ epic, state, choice }: { epic: number; state: EpicSession; 
   return (
     <Stack gap="sm">
       <Button variant="solid" tone="accent" icon="play" disabled={blocked || waits} onPress={start}>
-        Запустить
+        Start
       </Button>
       {needs}
       {note === null ? null : (
@@ -1207,7 +1208,7 @@ function StartPart({ epic, state, choice }: { epic: number; state: EpicSession; 
 /** What is chosen for the open epic and its start, by its session as read when it was opened. */
 function SessionPart({ epic }: { epic: number }) {
   const state = read(session)
-  if (state === null) return <Skeleton shape="block" label="Читаю сессию эпика" />
+  if (state === null) return <Skeleton shape="block" label="Loading the epic's session…" />
   if (!state.ok) return <RefusalBox error={state.error} />
   const choice = choiceOf()
   if (choice === null) return null
@@ -1235,18 +1236,18 @@ function epicTaskRow(task: EpicTask) {
 /** How the epic goes, by its tasks in ConPort: the counts by status and every task, the cancelled ones last. */
 function EpicTasksPart() {
   const list = read(epicTasks)
-  if (list === null) return <Skeleton shape="text" lines={3} label="Читаю задачи эпика" />
+  if (list === null) return <Skeleton shape="text" lines={3} label="Loading the epic's tasks…" />
   if (!list.ok) return <RefusalBox error={list.error} />
   const counts = taskCounts(list.data)
   const cancelled = (task: EpicTask): boolean => task.status === 'CANCELLED'
   const ordered = [...list.data.filter((task) => !cancelled(task)), ...list.data.filter(cancelled)]
   return (
     <Stack gap="sm">
-      <Heading level={3}>{`Задачи · ${counts.total}`}</Heading>
+      <Heading level={3}>{`Tasks · ${counts.total}`}</Heading>
       <Text key="task-counts" size="xs" muted>
         {taskCountsLine(counts)}
       </Text>
-      {ordered.length === 0 ? null : <List label="Задачи эпика">{ordered.map(epicTaskRow)}</List>}
+      {ordered.length === 0 ? null : <List label="Epic tasks">{ordered.map(epicTaskRow)}</List>}
     </Stack>
   )
 }
@@ -1258,7 +1259,7 @@ function EpicScreen({ epic, project }: { epic: EpicSummary; project: OrcaProject
     <Stack gap="lg">
       <Row justify="between" align="center">
         <Button variant="ghost" size="sm" onPress={closeEpic}>
-          ← Эпики
+          ← Epics
         </Button>
         <Text size="xs" muted truncate>
           {project.name}
@@ -1271,8 +1272,8 @@ function EpicScreen({ epic, project }: { epic: EpicSummary; project: OrcaProject
         <Heading level={2}>{epic.title}</Heading>
         <Row gap="xs" align="center" wrap>
           {/* An epic that can start has both: the CLI checks them before it calls it runnable. */}
-          <Badge>Спецификация</Badge>
-          <Badge>План</Badge>
+          <Badge>Spec ✓</Badge>
+          <Badge>Plan ✓</Badge>
           <Text key="epic-state" size="xs" muted>
             {state.line}
           </Text>
@@ -1289,7 +1290,7 @@ function Body() {
   if (project === null) return null
   if (project.project === null) return <BindCard />
   const list = read(epics)
-  if (list === null) return <Skeleton shape="text" lines={4} label="Читаю эпики и задачи" />
+  if (list === null) return <Skeleton shape="text" lines={4} label="Loading epics and tasks…" />
   if (!list.ok) return null
   const open = read(sheet)
   if (open !== null) return <SheetCard open={open} />

@@ -1,5 +1,6 @@
 // Answers of `conport epic ... --json` and `conport task list --json` in the shape the CLI prints
-// them, and answers of the worker about an epic, for the tests and the check scenarios.
+// them, one of `orca worktree list --json` in the shape Orca prints it, and answers of the worker
+// about an epic, for the tests and the check scenarios.
 import { DEFAULT_ROLES } from '../src/cli'
 import type { AgentKind, EpicList, EpicSession, EpicTask, Milestone, Refusal, SubagentList, TaskList } from '../src/protocol'
 
@@ -138,6 +139,48 @@ export const session = (extra: Partial<EpicSession> = {}): EpicSession => ({
   workflowBranches: false,
   ...extra
 })
+
+/** Epic 12, ready to start: its working copy was made outside Orca. */
+export const EPIC_12_LIST: EpicList = {
+  project: HANDLE,
+  epics: [
+    {
+      id: 12,
+      title: 'Sync over the air',
+      status: 'TODO',
+      progress: { open: 2, total: 2 },
+      milestone: null,
+      runnable: true,
+      reason: null,
+      ready: false
+    }
+  ]
+}
+
+/** The working copy of epic 12 that Herdr made in its own folder, outside the repository. */
+export const HERDR_COPY = '/work/.herdr/worktrees/repo/epic-12'
+
+/**
+ * `orca worktree list --json` of a repository at `root` with the copy of epic 12 that Herdr made:
+ * Orca lists every working copy git knows, its own or not, in the shape of its real answer.
+ */
+export function herdrWorktreeList(root: string): unknown {
+  const row = (path: string, branch: string, isMainWorktree: boolean, head: string) => ({
+    id: `repo-focus::${path}`,
+    repoId: 'repo-focus',
+    path,
+    head,
+    branch,
+    isBare: false,
+    isMainWorktree,
+    git: { path, head, branch, isBare: false, isMainWorktree }
+  })
+  const worktrees = [
+    row(root, 'refs/heads/main', true, '5f1c0b7e9a2d4c6b8e0f1a3c5d7e9b1a2c4d6e8f'),
+    row(HERDR_COPY, 'refs/heads/epic-12', false, '9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b')
+  ]
+  return { ok: true, result: { worktrees, totalCount: worktrees.length, truncated: false } }
+}
 
 /** The working copy of epic 7 is there and no agent is in it. */
 export const SESSION_COPY: EpicSession = session({ worktree: '/work/shop/.claude/worktrees/shop/epic-7' })

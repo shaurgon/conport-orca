@@ -8,7 +8,18 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
-import { AGENTS, EPIC_LIST, EPIC_TASKS, HANDLE, NO_KEY, SUBAGENTS, TASK_LIST } from '../test/fixtures'
+import {
+  AGENTS,
+  EPIC_12_LIST,
+  EPIC_LIST,
+  EPIC_TASKS,
+  HANDLE,
+  HERDR_COPY,
+  herdrWorktreeList,
+  NO_KEY,
+  SUBAGENTS,
+  TASK_LIST
+} from '../test/fixtures'
 import {
   type FakeAnswer,
   type FakeDirs,
@@ -376,7 +387,7 @@ test('a cli that cannot start names npx, Node.js and the PATH of the app', async
     assert.equal(answer.error.code, 'spawn_failed')
     assert.match(answer.error.message, /^npx: /)
     assert.match(answer.error.action, /Node\.js/)
-    assert.match(answer.error.action, /PATH приложения Orca/)
+    assert.match(answer.error.action, /Orca app's PATH/)
   }
   await worker.deactivate()
 })
@@ -408,13 +419,13 @@ test('the json refusal on standard output is read before the error stream', asyn
 
 test('a refusal printed only to the error stream is read from its one line', async () => {
   const f = fake([
-    { match: 'epic list', code: 1, stderr: 'epic_busy: эпик 7 ведёт yuri — дождитесь конца его прогона\n' },
+    { match: 'epic list', code: 1, stderr: 'epic_busy: epic 7 is led by yuri — wait until their session ends\n' },
     { match: 'epic agents', code: 1, stderr: 'boom\n' }
   ])
   const worker = await mountWorker(f.worker, { host: f.host() })
   assert.deepEqual(await worker.request('epics.list', { project: 'p', root: f.root }), {
     ok: false,
-    error: { code: 'epic_busy', message: 'эпик 7 ведёт yuri', action: 'дождитесь конца его прогона' }
+    error: { code: 'epic_busy', message: 'epic 7 is led by yuri', action: 'wait until their session ends' }
   })
   assert.deepEqual(await worker.request('agents.get', { project: 'p', root: f.root }), {
     ok: false,
@@ -679,9 +690,9 @@ test('prepare opens its terminal in the root of the chosen project', async () =>
 
 test('prepare tells each refusal of conport prompt in the words of the panel', async () => {
   const cases: Array<[number, string, string, string]> = [
-    [15, 'epic_ready', 'эпик 15 уже готов к запуску', 'нажмите «Обновить» и запустите его'],
-    [20, 'epic_not_preparable', 'эпик 20 не готов к запуску по причине, которую подготовка не исправит', 'нажмите «Обновить» и посмотрите эпик во вкладке «Подготовить»'],
-    [99, 'epic_not_found', 'эпика 99 нет в проекте', 'нажмите «Обновить»']
+    [15, 'epic_ready', 'Epic 15 is already ready to run', 'Press Refresh and start it.'],
+    [20, 'epic_not_preparable', 'Epic 20 is not ready to run for a reason preparation cannot fix', 'Press Refresh and look at the epic in the Prepare tab.'],
+    [99, 'epic_not_found', 'Epic 99 is not in the project', 'Press Refresh.']
   ]
   for (const [epic, code, message, action] of cases) {
     const { f, answer, created } = await prepare(epic, 'claude', [promptRefused('prepare', code)])
@@ -700,7 +711,7 @@ test('a refusal of conport prompt the panel words by its code reaches it as the 
   assert.deepEqual(noKey.created, [])
   for (const body of [{ ok: true }, { ok: true, text: '' }, { ok: true, text: 7 }]) {
     const odd = await prepare(10, 'claude', [{ match: 'prompt prepare ', stdout: json(body) }])
-    assert.deepEqual(odd.answer, { ok: false, error: { code: 'bad_output', message: 'conport ответил без текста задания', action: 'обновите conport' } })
+    assert.deepEqual(odd.answer, { ok: false, error: { code: 'bad_output', message: "conport answered without the task's text", action: 'Update conport.' } })
     assert.deepEqual(odd.created, [])
   }
 })
@@ -733,7 +744,7 @@ test('prepare refuses an agent that takes no positional request, found or not, a
     const refused = await prepare(10, agent, [], agents)
     assert.deepEqual(refused.answer, {
       ok: false,
-      error: { code: 'agent_cannot_prepare', message: `агент «${agent}» не принимает задание при запуске`, action: 'выберите Claude Code, Codex или Cursor' }
+      error: { code: 'agent_cannot_prepare', message: `The agent “${agent}” does not take a task at start`, action: 'Choose Claude Code, Codex or Cursor.' }
     })
     assert.deepEqual(refused.created, [])
   }
@@ -792,15 +803,15 @@ test('hand a task opens the chosen agent with the text of conport prompt as one 
 
 test('hand tells each refusal of conport prompt in the words of the panel', async () => {
   const cases: Array<[number, HandMode, string, string]> = [
-    [99, 'do', 'task_not_found', 'задачи 99 нет среди открытых задач вне эпиков'],
+    [99, 'do', 'task_not_found', 'Task 99 is not among the open tasks outside the epics'],
     // Done by someone else meanwhile: each mode says what the task no longer waits for.
-    [42, 'do', 'task_moved', 'задачу 42 уже взяли в работу'],
-    [41, 'review', 'task_moved', 'задача 41 не ждёт проверки'],
-    [43, 'fix', 'task_moved', 'задача 43 не ждёт исправлений']
+    [42, 'do', 'task_moved', 'Task 42 is already in progress'],
+    [41, 'review', 'task_moved', 'Task 41 is not waiting for review'],
+    [43, 'fix', 'task_moved', 'Task 43 is not waiting for fixes']
   ]
   for (const [id, mode, code, message] of cases) {
     const { f, answer, created, remembered } = await hand(id, mode, 'claude', [promptRefused('task', code)])
-    const error = { code, message, action: 'нажмите «Обновить»' }
+    const error = { code, message, action: 'Press Refresh.' }
     assert.deepEqual(answer, { ok: false, error }, `${id} ${mode}`)
     assert.deepEqual(refusalText(error), { what: message, action: error.action })
     assert.deepEqual(created, [])
@@ -824,7 +835,7 @@ test('hand refuses an agent that cannot take a task before the CLI is asked, and
   const refused = await hand(41, 'do', 'gemini')
   assert.deepEqual(refused.answer, {
     ok: false,
-    error: { code: 'agent_cannot_prepare', message: 'агент «gemini» не принимает задание при запуске', action: 'выберите Claude Code, Codex или Cursor' }
+    error: { code: 'agent_cannot_prepare', message: 'The agent “gemini” does not take a task at start', action: 'Choose Claude Code, Codex or Cursor.' }
   })
   // The CLI takes only an agent that can: it is not asked for a text the agent cannot be given.
   assert.deepEqual(promptCalls(refused.f), [])
@@ -882,8 +893,8 @@ interface StartCase {
   truncated?: boolean
   /** What orca says of the main working tree, made from its usual row. */
   main?: (row: WorktreeRow) => Partial<WorktreeRow>
-  /** Answers of the fake orca tried before the usual ones. */
-  orca?: FakeAnswer[]
+  /** Answers of the fake orca tried before the usual ones, or made from the folders of the machine. */
+  orca?: FakeAnswer[] | ((dirs: FakeDirs) => FakeAnswer[])
   /** Answers of the fake conport tried before the usual ones. */
   conport?: FakeAnswer[]
 }
@@ -900,8 +911,8 @@ async function startMachine(options: StartCase = {}) {
       { match: 'epic list', stdout: json(EPIC_LIST) },
       { match: 'epic agents', stdout: json(options.agents ?? AGENTS) }
     ],
-    ({ dir, root }) => [
-      ...(options.orca ?? []),
+    ({ dir, root, focused }) => [
+      ...(typeof options.orca === 'function' ? options.orca({ dir, root, focused }) : (options.orca ?? [])),
       worktreeList(
         root,
         [(options.main ?? ((row) => row))(worktreeRow(root, base, true)) as WorktreeRow, ...(options.rows?.(dir) ?? [])],
@@ -1008,6 +1019,27 @@ test('epic.start takes the working copy that is there and creates none', async (
   assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, way: 'sdd', worktree: path } })
   assert.deepEqual(created, [])
   assert.equal(opened[0]?.[3], `path:${path}`)
+})
+
+test('epic.start takes the working copy of the epic made outside Orca, outside the repository', async () => {
+  // Herdr made the branch epic-12 and its copy in its own folder; Orca lists that copy as any other.
+  const { f, answer, created, opened, command } = await start({
+    epic: 12,
+    refs: ['refs/heads/epic-12'],
+    conport: [{ match: 'epic list', stdout: json(EPIC_12_LIST) }],
+    orca: ({ root }) => [{ match: `worktree list --repo path:${root} `, stdout: json(herdrWorktreeList(root)) }]
+  })
+  // Taken as it is: no refusal that the branch has no copy, and no copy created beside it.
+  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, way: 'sdd', worktree: HERDR_COPY } })
+  assert.deepEqual(created, [])
+  assert.deepEqual(opened, [
+    ['terminal', 'create', '--worktree', `path:${HERDR_COPY}`, '--title', 'conport epic 12 · SDD', '--command', command, '--json']
+  ])
+  // The task names that copy as the place of the work.
+  assert.deepEqual(
+    f.conportCalls().at(-1),
+    epicPromptArgs({ epic: 12, project: HANDLE, harness: 'claude', worktree: HERDR_COPY, base: 'main', roles: TYPES })
+  )
 })
 
 test('epic.start takes the main working tree when it is on the branch of the epic', async () => {
@@ -1158,7 +1190,7 @@ test('epic.start by the workflow puts no role type into the task', async () => {
 
 test('epic.start refuses an epic that is gone', async () => {
   const started = await start({ epic: 99 })
-  assertRefused(started, 'epic_not_found', 'эпика 99 нет в проекте', 'нажмите «Обновить»')
+  assertRefused(started, 'epic_not_found', 'Epic 99 is not in the project', 'Press Refresh.')
   // The first refusal: nothing else is asked.
   assert.deepEqual(started.f.conportCalls(), [EPIC_LIST_CALL])
   assert.deepEqual(started.f.gitCalls(), [])
@@ -1169,7 +1201,7 @@ test('epic.start refuses an epic without a spec or a plan', async () => {
   for (const epic of [9, 10]) {
     // Whatever else is wrong with the request, the epic is named first.
     const started = await start({ epic, way: 'workflow', harness: 'gemini' })
-    assertRefused(started, 'epic_not_ready', `у эпика ${epic} нет спецификации или плана`, 'подготовьте эпик на вкладке «Подготовить»')
+    assertRefused(started, 'epic_not_ready', `Epic ${epic} has no spec or no plan`, 'Prepare the epic in the Prepare tab.')
     assert.deepEqual(started.f.conportCalls(), [EPIC_LIST_CALL])
   }
 })
@@ -1177,7 +1209,7 @@ test('epic.start refuses an epic without a spec or a plan', async () => {
 test('epic.start refuses the workflow for a harness other than claude', async () => {
   for (const harness of ['codex', 'gemini']) {
     const started = await start({ way: 'workflow', harness })
-    assertRefused(started, 'way_needs_claude', 'способ «/conport:epic» есть только у Claude Code с плагином conport', 'выберите харнесс Claude Code')
+    assertRefused(started, 'way_needs_claude', 'The /conport:epic mode is only in Claude Code with the conport plugin', 'Choose the Claude Code harness.')
     // Before the harness is looked for.
     assert.deepEqual(started.f.conportCalls(), [EPIC_LIST_CALL])
   }
@@ -1186,7 +1218,7 @@ test('epic.start refuses the workflow for a harness other than claude', async ()
 test('epic.start refuses a role type that is not a plain name', async () => {
   const keys = ['implementer', 'reviewer', 'gapHunter', 'finalReviewer'] as const
   // What a shell or the text of a task would read, an empty type, a path, letters that are not Latin.
-  const types = ['my implementer', "o'neil", 'gap\nhunter', '', '`id`', '$(id)', 'a;b', 'a/b', 'тип', 'sdd-implementer\n']
+  const types = ['my implementer', "o'neil", 'gap\nhunter', '', '`id`', '$(id)', 'a;b', 'a/b', 'τύπος', 'sdd-implementer\n']
   const invalid: unknown[] = [
     ...types.map((type, i) => ({ ...TYPES, [keys[i % keys.length] ?? 'reviewer']: type })),
     // A role that is not named at all, or not by a string.
@@ -1197,7 +1229,7 @@ test('epic.start refuses a role type that is not a plain name', async () => {
   ]
   for (const roles of invalid) {
     const started = await start({ roles: roles as Roles })
-    assertRefused(started, 'role_invalid', 'тип субагента — не простое имя', 'выберите тип роли из списка')
+    assertRefused(started, 'role_invalid', 'The subagent type is not a plain name', 'Choose a type for the role from the list.')
     // Before the harness is looked for.
     assert.deepEqual(started.f.conportCalls(), [EPIC_LIST_CALL])
   }
@@ -1207,7 +1239,7 @@ test('epic.start refuses a role type that is not a plain name', async () => {
     const request = { project: HANDLE, root: machine.f.root, epic: 7, way, harness }
     const answer = await machine.worker.request('epic.start', request as typeof request & { roles: Roles })
     await machine.worker.deactivate()
-    const error = { code: 'role_invalid', message: 'тип субагента — не простое имя', action: 'выберите тип роли из списка' }
+    const error = { code: 'role_invalid', message: 'The subagent type is not a plain name', action: 'Choose a type for the role from the list.' }
     assert.deepEqual(answer, { ok: false, error }, `${way} ${harness}`)
     assert.deepEqual(machine.worker.refusals, [])
     assert.deepEqual(machine.f.orcaCalls(), [])
@@ -1223,7 +1255,7 @@ test('epic.start refuses a harness that takes no task', async () => {
   const agents = { agents: [...AGENTS.agents, { id: 'opencode', label: 'OpenCode', command: 'opencode', found: true }] }
   for (const harness of ['gemini', 'opencode', 'aider']) {
     const started = await start({ harness, agents })
-    assertRefused(started, 'agent_cannot_prepare', `харнесс «${harness}» не принимает задание при запуске`, 'выберите Claude Code, Codex или Cursor')
+    assertRefused(started, 'agent_cannot_prepare', `The harness “${harness}” does not take a task at start`, 'Choose Claude Code, Codex or Cursor.')
     assert.deepEqual(started.f.gitCalls(), [])
   }
 })
@@ -1231,8 +1263,8 @@ test('epic.start refuses a harness that takes no task', async () => {
 test('epic.start refuses a harness that is not found', async () => {
   const agents = { agents: AGENTS.agents.map((a) => (a.id === 'codex' ? { ...a, found: false } : a)) }
   const started = await start({ harness: 'codex', agents })
-  assertRefused(started, 'agent_not_found', 'харнесс «codex» не найден на машине', HARNESS_MISSING_ACTION)
-  assert.equal(HARNESS_MISSING_ACTION, 'запустите его в этом рабочем месте Orca и нажмите «Обновить»')
+  assertRefused(started, 'agent_not_found', 'Harness “codex” not found on this machine', HARNESS_MISSING_ACTION)
+  assert.equal(HARNESS_MISSING_ACTION, 'Start it in this Orca workspace and press Refresh.')
   // Before the branches are read.
   assert.deepEqual(started.f.conportCalls(), [EPIC_LIST_CALL, EPIC_AGENTS_CALL])
   assert.deepEqual(started.f.gitCalls(), [])
@@ -1241,7 +1273,7 @@ test('epic.start refuses a harness that is not found', async () => {
 
 test('epic.start refuses the workflow when the branch epic-N is there', async () => {
   const started = await start({ way: 'workflow', refs: ['refs/heads/epic-7'] })
-  assertRefused(started, 'epic_started_sdd', 'выбран поток, а ветка epic-7 уже есть: эпик начат навыком SDD', 'выберите способ «Навык SDD»')
+  assertRefused(started, 'epic_started_sdd', 'The workflow is chosen, but the branch epic-7 is there already: the epic was started by the SDD skill', 'Choose the SDD skill mode.')
   // Before the working copies are read.
   assert.deepEqual(started.f.orcaCalls(), [])
   // The branches of the workflow itself are what a second run of it picks up.
@@ -1251,7 +1283,7 @@ test('epic.start refuses the workflow when the branch epic-N is there', async ()
 
 test('epic.start refuses SDD when branches epicN/… are there', async () => {
   const started = await start({ refs: ['refs/heads/epic7/t12'] })
-  assertRefused(started, 'epic_started_workflow', 'выбран навык SDD, а ветки epic7/… уже есть: эпик начат потоком', 'выберите способ «/conport:epic»')
+  assertRefused(started, 'epic_started_workflow', 'The SDD skill is chosen, but branches epic7/… are there already: the epic was started by the workflow', 'Choose the /conport:epic mode.')
   assert.deepEqual(started.f.orcaCalls(), [])
   // A branch under `epic-7/` is no branch of the workflow, and no branch of the epic either.
   const other = await start({ refs: ['refs/heads/epic-7/notes'] })
@@ -1262,7 +1294,7 @@ test('epic.start refuses SDD when branches epicN/… are there', async () => {
 test('epic.start refuses when the main working tree is on no branch', async () => {
   for (const way of ['sdd', 'workflow'] as const) {
     const started = await start({ way, base: null })
-    assertRefused(started, 'root_detached', 'главная рабочая копия репозитория не на ветке: базы для эпика нет', 'переключите главную рабочую копию на ветку')
+    assertRefused(started, 'root_detached', "The repository's main working copy is not on a branch, so the epic has no base", 'Check out a branch in the main working copy.')
   }
   // However orca says "no branch": an empty name, or no name at all.
   const unnamed: Array<(row: WorktreeRow) => Partial<WorktreeRow>> = [(row) => ({ ...row, branch: '' }), ({ branch: _gone, ...row }) => row]
@@ -1279,12 +1311,12 @@ test('epic.start refuses when the main working tree is on no branch', async () =
 
 test('epic.start refuses a branch epic-N without a working copy', async () => {
   const started = await start({ refs: ['refs/heads/epic-7'], rows: (dir) => [worktreeRow(join(dir, 'elsewhere', 'epic-8'), 'epic-8')] })
-  assertRefused(started, 'epic_branch_taken', 'ветка epic-7 есть, а рабочей копии у неё нет', 'откройте ветку рабочим местом в Orca')
+  assertRefused(started, 'epic_branch_taken', 'The branch epic-7 is there, but it has no working copy', 'Open the branch as a workspace in Orca.')
 })
 
 test('epic.start refuses a truncated worktree list', async () => {
-  const message = 'список рабочих копий репозитория не поместился в ответ Orca: их больше 10000'
-  const action = 'удалите ненужные рабочие копии репозитория в Orca и повторите'
+  const message = "The repository's working copies did not fit in Orca's answer: there are more than 10000"
+  const action = 'Delete the working copies you do not need in Orca and try again.'
   // The copy may be among the rows cut off: none is created on a part of the list.
   assertRefused(await start({ truncated: true }), 'workspaces_truncated', message, action)
   assertRefused(await start({ truncated: true, refs: ['refs/heads/epic-7'] }), 'workspaces_truncated', message, action)
@@ -1304,17 +1336,17 @@ test('epic.start refuses an answer of orca that lacks what it was asked for', as
   // A whole list that names no main working tree of the repository.
   for (const way of ['sdd', 'workflow'] as const) {
     const unlisted = await start({ way, main: (row) => ({ ...row, isMainWorktree: false }) })
-    assertRefused(unlisted, 'bad_output', 'orca не назвала главную рабочую копию репозитория', 'обновите Orca')
+    assertRefused(unlisted, 'bad_output', "orca did not name the repository's main working copy", 'Update Orca.')
   }
   // A working copy created without its path: no terminal is opened in a guessed folder.
   const pathless = await start({ orca: [answered('worktree create ', { worktree: {} })] })
-  assert.deepEqual(pathless.answer, { ok: false, error: { code: 'bad_output', message: 'orca создала рабочую копию и не назвала её путь', action: 'обновите Orca' } })
+  assert.deepEqual(pathless.answer, { ok: false, error: { code: 'bad_output', message: 'orca created a working copy and did not name its path', action: 'Update Orca.' } })
   assert.deepEqual(pathless.opened, [])
   assert.deepEqual(pathless.storage, {})
   // A terminal opened without its handle: there is no session to remember or to bring forward.
   for (const way of ['sdd', 'workflow'] as const) {
     const nameless = await start({ way, orca: [answered('terminal create ', { terminal: {} })] })
-    assert.deepEqual(nameless.answer, { ok: false, error: { code: 'bad_output', message: 'orca открыла терминал и не назвала его', action: 'обновите Orca' } })
+    assert.deepEqual(nameless.answer, { ok: false, error: { code: 'bad_output', message: 'orca opened a terminal and did not name it', action: 'Update Orca.' } })
     assert.deepEqual(nameless.switched, [])
     assert.deepEqual(nameless.storage, {})
   }
@@ -1335,11 +1367,11 @@ test('a refusal of orca is returned as is', async () => {
 
 test('epic.start tells each refusal of conport prompt in the words of the panel, the copy left for the next start', async () => {
   const cases: Array<[string, string, string]> = [
-    ['epic_not_found', 'эпика 7 нет в проекте', 'нажмите «Обновить»'],
-    ['epic_not_ready', 'у эпика 7 нет спецификации или плана', 'подготовьте эпик на вкладке «Подготовить»'],
-    ['way_needs_claude', 'способ «/conport:epic» есть только у Claude Code с плагином conport', 'выберите харнесс Claude Code'],
-    ['role_invalid', 'тип субагента — не простое имя', 'выберите тип роли из списка'],
-    ['agent_cannot_prepare', 'харнесс «claude» не принимает задание при запуске', 'выберите Claude Code, Codex или Cursor']
+    ['epic_not_found', 'Epic 7 is not in the project', 'Press Refresh.'],
+    ['epic_not_ready', 'Epic 7 has no spec or no plan', 'Prepare the epic in the Prepare tab.'],
+    ['way_needs_claude', 'The /conport:epic mode is only in Claude Code with the conport plugin', 'Choose the Claude Code harness.'],
+    ['role_invalid', 'The subagent type is not a plain name', 'Choose a type for the role from the list.'],
+    ['agent_cannot_prepare', 'The harness “claude” does not take a task at start', 'Choose Claude Code, Codex or Cursor.']
   ]
   for (const [code, message, action] of cases) {
     // The CLI checks again what the worker checked: the epic may have changed in between.
@@ -1357,7 +1389,7 @@ test('epic.start tells each refusal of conport prompt in the words of the panel,
   assert.deepEqual(noKey.answer, { ok: false, error: NO_KEY })
   assert.deepEqual(noKey.opened, [])
   const textless = await start({ conport: [{ match: 'prompt epic ', stdout: json({ ok: true }) }] })
-  assert.deepEqual(textless.answer, { ok: false, error: { code: 'bad_output', message: 'conport ответил без текста задания', action: 'обновите conport' } })
+  assert.deepEqual(textless.answer, { ok: false, error: { code: 'bad_output', message: "conport answered without the task's text", action: 'Update conport.' } })
   assert.deepEqual(textless.opened, [])
 })
 
@@ -1372,7 +1404,7 @@ test('epic.start refuses when the branches cannot be listed', async () => {
   const answer = await worker.request('epic.start', { project: HANDLE, root: f.root, epic: 7, way: 'sdd', harness: 'claude', roles: TYPES })
   await worker.deactivate()
   // What git said, as it said it, and the one thing to do; the panel shows both.
-  const error = { code: 'git_failed', message: 'fatal: not a repository', action: 'проверьте репозиторий командой git status в его корне и повторите' }
+  const error = { code: 'git_failed', message: 'fatal: not a repository', action: 'Check the repository with git status in its root and try again.' }
   assert.deepEqual(answer, { ok: false, error })
   assert.deepEqual(refusalText(error), { what: error.message, action: error.action })
   assert.deepEqual(f.orcaCalls(), [])
@@ -1389,7 +1421,7 @@ test('a git that fails without a word is told by its exit code', async () => {
   const worker = await mountWorker(f.worker, { host })
   const answer = await worker.request('epic.start', { project: HANDLE, root: f.root, epic: 7, way: 'sdd', harness: 'claude', roles: TYPES })
   await worker.deactivate()
-  const error = { code: 'git_failed', message: 'git: код выхода 3', action: 'проверьте репозиторий командой git status в его корне и повторите' }
+  const error = { code: 'git_failed', message: 'git: exit code 3', action: 'Check the repository with git status in its root and try again.' }
   assert.deepEqual(answer, { ok: false, error })
   assert.deepEqual(f.orcaCalls(), [])
 })
@@ -1403,7 +1435,7 @@ test('a git that cannot start is told with the one thing to do', async () => {
   const answer = await worker.request('epic.start', { project: HANDLE, root: f.root, epic: 7, way: 'sdd', harness: 'claude', roles: TYPES })
   await worker.deactivate()
   assert.equal(answer.ok === false && answer.error.code, 'spawn_failed')
-  assert.match(answer.ok === false ? answer.error.action : '', /сделайте git видимым в PATH/)
+  assert.match(answer.ok === false ? answer.error.action : '', /Make git visible on the Orca app's PATH/)
   assert.deepEqual(f.orcaCalls(), [])
 })
 
@@ -1775,8 +1807,8 @@ test('epic.session answers with the main working tree on no branch', async () =>
 test('epic.session decides nothing on a list orca cut short', async () => {
   const copies = {
     code: 'workspaces_truncated',
-    message: 'список рабочих копий репозитория не поместился в ответ Orca: их больше 10000',
-    action: 'удалите ненужные рабочие копии репозитория в Orca и повторите'
+    message: "The repository's working copies did not fit in Orca's answer: there are more than 10000",
+    action: 'Delete the working copies you do not need in Orca and try again.'
   }
   // The copy of the epic may be among the rows cut off.
   assert.deepEqual((await session({ copy: false, truncated: true })).answer, { ok: false, error: copies })
@@ -1786,8 +1818,8 @@ test('epic.session decides nothing on a list orca cut short', async () => {
 
   const terminals = {
     code: 'terminals_truncated',
-    message: 'список терминалов рабочего места не поместился в ответ Orca',
-    action: 'закройте лишние терминалы этого рабочего места в Orca и нажмите «Обновить»'
+    message: "The workspace's terminals did not fit in Orca's answer",
+    action: 'Close the terminals you do not need in this Orca workspace and press Refresh.'
   }
   // The terminal of the session may be among the rows cut off.
   const cut = await session({ storage: remembered('sdd'), terminals: { copy: [shell('term-a')] }, terminalsTruncated: true })
@@ -1814,7 +1846,7 @@ test('epic.session returns a refusal of orca and of git', async () => {
   const git = await session({ git: [{ match: '-C ', code: 128, stderr: 'fatal: not a repository\n' }] })
   assert.deepEqual(git.answer, {
     ok: false,
-    error: { code: 'git_failed', message: 'fatal: not a repository', action: 'проверьте репозиторий командой git status в его корне и повторите' }
+    error: { code: 'git_failed', message: 'fatal: not a repository', action: 'Check the repository with git status in its root and try again.' }
   })
   assert.deepEqual(git.f.orcaCalls(), [])
 })
@@ -1822,8 +1854,8 @@ test('epic.session returns a refusal of orca and of git', async () => {
 /** What a request about the session of an epic answers when its project is not named by the handle. */
 const NOT_HANDLE = {
   code: 'project_not_handle',
-  message: 'проект назван не по handle: выбор и сессия эпика хранятся под handle проекта',
-  action: 'нажмите «Обновить»'
+  message: "The project is not named by its handle: the choice and the epic's session are kept under the project's handle",
+  action: 'Press Refresh.'
 }
 
 test('epic.session refuses a project that is not named by its handle', async () => {
@@ -1918,7 +1950,7 @@ test('epic.tasks returns the refusal of the cli, of the first page or of a later
   assert.deepEqual((await epicTasks([tasksPage(0, first, 300), refused(200)])).answer, { ok: false, error: NO_KEY })
   // An answer that is no list of tasks.
   const odd = await epicTasks([{ match: 'api tasks list', stdout: json({ detail: 'ok' }) }])
-  assert.deepEqual(odd.answer, { ok: false, error: { code: 'bad_output', message: 'conport ответил без списка задач', action: 'обновите conport' } })
+  assert.deepEqual(odd.answer, { ok: false, error: { code: 'bad_output', message: 'conport answered without a list of tasks', action: 'Update conport.' } })
 })
 
 // --- subagents.get ---
@@ -1963,7 +1995,7 @@ test('subagents.get returns the refusal of the cli', async () => {
 })
 
 test('subagents.get refuses a harness that is not named', async () => {
-  const error = { code: 'harness_invalid', message: 'харнесс не назван', action: 'выберите харнесс эпика' }
+  const error = { code: 'harness_invalid', message: 'No harness is named', action: "Choose the epic's harness." }
   for (const harness of ['', '  ', 7, null, undefined]) {
     const { f, answer } = await subagentsOf(harness as string, [])
     assert.deepEqual(answer, { ok: false, error }, JSON.stringify(harness))
@@ -1996,7 +2028,7 @@ test('terminal.show switches to the live terminal of the session of the epic', a
 })
 
 test('terminal.show refuses when the epic has no live session, and switches to nothing', async () => {
-  const error = { code: 'session_gone', message: 'у эпика 7 нет живой сессии: её терминал закрыт или агент в нём завершился', action: 'нажмите «Обновить»' }
+  const error = { code: 'session_gone', message: 'Epic 7 has no live session: its terminal is closed or its agent has exited', action: 'Press Refresh.' }
   const gone: SessionCase[] = [
     // No working copy; a copy with its two shells; an agent that left its terminal.
     { copy: false, storage: remembered('sdd') },

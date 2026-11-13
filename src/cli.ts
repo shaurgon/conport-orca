@@ -142,7 +142,7 @@ function refusalLine(stderr: string, exit: number | null): Refusal {
   const last = lines.at(-1) ?? ''
   const match = /^([\w.-]+):\s*(.+?)\s+—\s+(.+)$/.exec(last)
   if (match) return { code: match[1] ?? '', message: match[2] ?? '', action: match[3] ?? '' }
-  return { code: 'cli_failed', message: last || `код выхода ${exit}`, action: '' }
+  return { code: 'cli_failed', message: last || `exit code ${exit}`, action: '' }
 }
 
 /**
@@ -158,8 +158,8 @@ export function interpret(program: string, result: ProcessResult, executable = p
         code: 'spawn_failed',
         message: `${executable}: ${result.failure}`,
         action:
-          `${executable === 'npx' || executable === 'node' ? 'установите Node.js и ' : ''}` +
-          `сделайте ${executable} видимым в PATH приложения Orca, а не только терминала; затем перезапустите Orca`
+          `${executable === 'npx' || executable === 'node' ? 'Install Node.js and make' : 'Make'} ${executable} visible ` +
+          "on the Orca app's PATH, not only the terminal's; then restart Orca."
       }
     }
   }
@@ -170,7 +170,7 @@ export function interpret(program: string, result: ProcessResult, executable = p
   if (body === undefined) {
     return {
       ok: false,
-      error: { code: 'bad_output', message: `${program} ответил не JSON`, action: `обновите ${program}` }
+      error: { code: 'bad_output', message: `${program} did not answer with JSON`, action: `Update ${program}.` }
     }
   }
   return { ok: true, data: body }
