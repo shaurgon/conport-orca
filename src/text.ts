@@ -249,6 +249,73 @@ export interface FailureText {
   action: string
 }
 
+const REFRESH = 'нажмите «Обновить»'
+
+/**
+ * The refusals about an epic, a task or an agent that the worker says in its own words: whether it
+ * found the reason itself or `conport prompt` refused with the same code.
+ */
+export const REFUSED = {
+  epicNotFound: (epic: number): FailureText => ({ what: `эпика ${epic} нет в проекте`, action: REFRESH }),
+  epicReady: (epic: number): FailureText => ({ what: `эпик ${epic} уже готов к запуску`, action: 'нажмите «Обновить» и запустите его' }),
+  epicNotPreparable: (epic: number): FailureText => ({
+    what: `эпик ${epic} не готов к запуску по причине, которую подготовка не исправит`,
+    action: 'нажмите «Обновить» и посмотрите эпик во вкладке «Подготовить»'
+  }),
+  epicNotReady: (epic: number): FailureText => ({
+    what: `у эпика ${epic} нет спецификации или плана`,
+    action: 'подготовьте эпик на вкладке «Подготовить»'
+  }),
+  wayNeedsClaude: { what: 'способ «/conport:epic» есть только у Claude Code с плагином conport', action: WAY_NEEDS_CLAUDE.action },
+  roleInvalid: { what: 'тип субагента — не простое имя', action: 'выберите тип роли из списка' },
+  agentCannotPrepare: (noun: 'агент' | 'харнесс', agent: string): FailureText => ({
+    what: `${noun} «${agent}» не принимает задание при запуске`,
+    action: PREPARE_AGENTS_ACTION
+  }),
+  taskNotFound: (task: number): FailureText => ({ what: `задачи ${task} нет среди открытых задач вне эпиков`, action: REFRESH }),
+  taskMoved: (task: number, mode: HandMode): FailureText => ({
+    what: { do: `задачу ${task} уже взяли в работу`, review: `задача ${task} не ждёт проверки`, fix: `задача ${task} не ждёт исправлений` }[mode],
+    action: REFRESH
+  })
+}
+
+/** What the worker asked `conport prompt` for: the request a refusal of it answers. */
+export type PromptSubject =
+  | { command: 'epic'; epic: number; harness: string }
+  | { command: 'prepare'; epic: number }
+  | { command: 'task'; task: number; mode: HandMode }
+
+/**
+ * A refusal of `conport prompt` in the words the worker says it in when it finds the reason
+ * itself; undefined for a code the panel words by `refusalText`. The CLI words it in English for
+ * a terminal: the panel tells the person what it always told.
+ */
+export function promptRefusal(code: string, subject: PromptSubject): FailureText | undefined {
+  const epic = subject.command === 'task' ? undefined : subject.epic
+  switch (code) {
+    case 'epic_not_found':
+      return epic === undefined ? undefined : REFUSED.epicNotFound(epic)
+    case 'epic_ready':
+      return epic === undefined ? undefined : REFUSED.epicReady(epic)
+    case 'epic_not_preparable':
+      return epic === undefined ? undefined : REFUSED.epicNotPreparable(epic)
+    case 'epic_not_ready':
+      return epic === undefined ? undefined : REFUSED.epicNotReady(epic)
+    case 'way_needs_claude':
+      return REFUSED.wayNeedsClaude
+    case 'role_invalid':
+      return REFUSED.roleInvalid
+    case 'agent_cannot_prepare':
+      return subject.command === 'epic' ? REFUSED.agentCannotPrepare('харнесс', subject.harness) : undefined
+    case 'task_not_found':
+      return subject.command === 'task' ? REFUSED.taskNotFound(subject.task) : undefined
+    case 'task_moved':
+      return subject.command === 'task' ? REFUSED.taskMoved(subject.task, subject.mode) : undefined
+    default:
+      return undefined
+  }
+}
+
 const ORCA_AWAY: FailureText = { what: 'Orca не ответила', action: 'проверьте, что Orca запущена, и повторите' }
 
 /**

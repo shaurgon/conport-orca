@@ -103,8 +103,9 @@ interface Choice {
   roles: Roles
 }
 
-/** What the sheet opened over a tab is for: an epic to prepare, or a task to hand to an agent. */
-type Sheet = { kind: 'spec' | 'plan'; epic: EpicSummary } | { kind: HandMode; task: OutsideTask }
+/** What the sheet opened over a tab is for: an epic to prepare, or a task to hand to an agent.
+ *  One member per kind of an epic: a test of `kind` then narrows to the task's member. */
+type Sheet = { kind: 'spec'; epic: EpicSummary } | { kind: 'plan'; epic: EpicSummary } | { kind: HandMode; task: OutsideTask }
 
 const projects = atom<Result<OrcaProject[]> | null>(null)
 /** The root of the chosen project; the one chosen last is taken when no project is in focus. */

@@ -16,9 +16,9 @@ import {
   TASK_LIST,
   untyped
 } from '../test/fixtures'
-import type { EpicList, EpicSession, OrcaProject } from './protocol'
+import type { EpicList, EpicSession, OrcaProject, Result } from './protocol'
 
-const ok = <T>(data: T) => ({ ok: true, data })
+const ok = <T>(data: T): Result<T> => ({ ok: true, data })
 const ROOT = '/work/shop'
 const PROJECTS: OrcaProject[] = [
   { name: 'Shop', root: ROOT, kind: 'git', project: 'shop-api', source: 'repository', focused: true },
@@ -27,7 +27,7 @@ const PROJECTS: OrcaProject[] = [
   { name: 'Notes', root: '/work/notes', kind: 'folder', project: null, source: null, focused: false }
 ]
 /** As the CLI refuses when Claude Code cannot be asked for its plugins. */
-const NO_SUBAGENTS = {
+const NO_SUBAGENTS: Result<never> = {
   ok: false,
   error: {
     code: 'subagents_unavailable',

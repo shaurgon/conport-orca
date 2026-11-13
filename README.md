@@ -165,6 +165,6 @@ orca plugin check . --json    # renders each scenario of src/panel.check.ts
 orca plugin shot . --scenario epic-session-alive --json   # needs Orca's window hidden or minimized
 ```
 
-Type checking: Orca does not ship the plugin typings yet (`orca plugin types .` fails), so the code
-is only transpiled by `test` and `check`. Once `orca plugin types .` writes `.orca/types/`, run
-`npx tsc -p .` and keep it clean.
+Type checking: `test` and `check` only transpile the code. `npm ci` installs TypeScript and the Node typings, and
+`npm run typecheck` writes the Orca typings to `.orca/types/` (`orca plugin types .`) and runs
+`tsc -p .`; keep it clean.

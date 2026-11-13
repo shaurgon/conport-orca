@@ -1,5 +1,7 @@
 // What the plugin no longer has: the requests of a dispatcher run and the commands of the CLI
 // behind them. Read from the files themselves, so a name that comes back anywhere is caught.
+// The assert of orca/testing is Node's, but its typings leave doesNotMatch out.
+import { doesNotMatch } from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -41,5 +43,5 @@ test('the manifest describes the start of an epic by a harness', () => {
       'chosen harness with a subagent type per role, an agent to prepare an epic without a spec or plan, and the tasks ' +
       'outside the epics handed to an agent to do or to review.'
   )
-  assert.doesNotMatch(manifest.description, /start, continuation and stop|an agent per role/)
+  doesNotMatch(manifest.description, /start, continuation and stop|an agent per role/)
 })

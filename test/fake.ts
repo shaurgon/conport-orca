@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { JsonValue } from 'orca'
 import { mockHost } from 'orca/testing'
+import type { OrcaWorkerApi } from 'orca/worker'
 import { createWorker } from '../src/worker'
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), 'fake-cli.mjs')
@@ -30,7 +32,7 @@ export interface Fake {
    */
   host(results?: Record<string, unknown>, storage?: Record<string, unknown>): ReturnType<typeof mockHost>
   /** The worker module to pass to `mountWorker`. */
-  worker: { default: (orca: never) => void; deactivate: () => void }
+  worker: { default: (orca: OrcaWorkerApi) => void; deactivate: () => void }
   /** The args each call of the fake conport received, in order. */
   conportCalls(): string[][]
   orcaCalls(): string[][]
@@ -57,6 +59,23 @@ function orcaRepo(root: string, focused: string, pluginRepo: string): FakeAnswer
 
 export function json(value: unknown): FakeAnswer['stdout'] {
   return JSON.stringify(value)
+}
+
+/** The text the fake conport prints for a `prompt` call no answer of its scenario matches. */
+export function promptText(args: readonly string[]): string {
+  return `The task of: ${args.join(' ')}\nIt's "one" argument: $HOME \`x\``
+}
+
+/** What the fake conport answers when `conport prompt <command>` refuses with `code`, in the CLI's English. */
+export function promptRefused(command: 'epic' | 'prepare' | 'task', code: string): FakeAnswer {
+  const message = `${code.replace(/_/g, ' ')}, as the CLI words it`
+  const action = 'do what the CLI says'
+  return {
+    match: `prompt ${command} `,
+    code: 2,
+    stdout: json({ ok: false, error: { code, message, action } }),
+    stderr: `${code}: ${message} — ${action}\n`
+  }
 }
 
 /** A row of `orca worktree list`: a working copy of the fake repository on `branch`, or on none. */
@@ -143,7 +162,9 @@ export function fake(conport: FakeAnswer[], orca?: Answers, git?: Answers): Fake
   ]
   const host = (results: Record<string, unknown> = {}, storage: Record<string, unknown> = {}) =>
     mockHost({
-      storage,
+      // The tests store what a worker of any version may have left, its broken records included;
+      // each is a JSON value, typed loosely so a case can leave out a field.
+      storage: storage as Record<string, JsonValue>,
       results: {
         'workspace.readContext': { branch: 'feature', displayName: 'feature', terminals: [] },
         'workspace.list': { workspaces, truncated: false },

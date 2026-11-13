@@ -1,5 +1,7 @@
 // The worker against the fake conport and orca executables (test/fake-cli.mjs): every call
 // spawns a real child process, as in Orca.
+// The assert of orca/testing is Node's, but its typings leave doesNotMatch out.
+import { doesNotMatch } from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -7,12 +9,22 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
 import { AGENTS, EPIC_LIST, EPIC_TASKS, HANDLE, NO_KEY, SUBAGENTS, TASK_LIST } from '../test/fixtures'
-import { type FakeAnswer, type FakeDirs, type WorktreeRow, fake, json, terminalList, worktreeList, worktreeRow } from '../test/fake'
-import { CLI_VERSION, DEFAULT_ROLES, HANDLE_FORM, epicTask, epicWorkflowTask, handTask, prepareTask } from './cli'
-import type { AgentKind, EpicList, EpicSession, EpicTask, HandMode, Result, Roles, TaskList, Way } from './protocol'
+import {
+  type FakeAnswer,
+  type FakeDirs,
+  type WorktreeRow,
+  fake,
+  json,
+  promptRefused,
+  promptText,
+  terminalList,
+  worktreeList,
+  worktreeRow
+} from '../test/fake'
+import { DEFAULT_ROLES, HANDLE_FORM, epicPromptArgs, preparePromptArgs, taskPromptArgs } from './cli'
+import type { AgentKind, EpicSession, EpicTask, HandMode, Result, Roles, Way } from './protocol'
 import { HARNESS_MISSING_ACTION, refusalText } from './text'
 
-const NPX = `npx -y conport@${CLI_VERSION}`
 const SWITCHED = { match: 'terminal switch --terminal term-1 ', stdout: json({ ok: true, result: {} }) }
 
 const ROLES = { implementer: 'codex', reviewer: 'claude', gapHunter: 'claude', finalReviewer: 'gemini' }
@@ -97,7 +109,7 @@ test('the worker polls nothing and shows no status bar item', async () => {
     assert.deepEqual(timers.delays(), [])
     // Each read of ConPort was asked for by one request: none is repeated behind it.
     assert.deepEqual(f.conportCalls().map((call) => call.slice(0, 2).join(' ')), [
-      'epic list', 'epic agents', 'api tasks', 'epic subagents', 'epic list', 'epic agents'
+      'epic list', 'epic agents', 'api tasks', 'epic subagents', 'epic list', 'epic agents', 'prompt epic'
     ])
     assert.deepEqual(worker.posts, [])
     assert.deepEqual(host.callsOf('statusBar.update'), [])
@@ -567,17 +579,15 @@ function argumentsOf(command: string): string[] {
 }
 
 /**
- * Prepares `epic` of `list` with `agent` over the fake CLI; the answer, the terminal command
- * and the one argument the agent gets.
+ * Prepares `epic` with `agent` over the fake CLI, whose `conport prompt` answers by `conport`
+ * when given and with its own text otherwise; the answer, the terminal command and the one
+ * argument the agent gets.
  */
-async function prepare(epic: number, agent = 'claude', list: EpicList = EPIC_LIST, agents = AGENTS) {
-  const f = fake([
-    { match: 'epic list', stdout: json(list) },
-    { match: 'epic agents', stdout: json(agents) }
-  ], [SWITCHED])
+async function prepare(epic: number, agent = 'claude', conport: FakeAnswer[] = [], agents = AGENTS, project = 'shop-api') {
+  const f = fake([...conport, { match: 'epic agents', stdout: json(agents) }], [SWITCHED])
   const host = f.host({ 'agents.list': { agents: [] } })
   const worker = await mountWorker(f.worker, { host })
-  const answer = await worker.request('epic.prepare', { project: 'shop-api', root: f.root, epic, agent })
+  const answer = await worker.request('epic.prepare', { project, root: f.root, epic, agent })
   const created = host.callsOf('terminal.create') as Array<{ workspaceId: string; title: string; command: string }>
   const command = created[0]?.command ?? ''
   const args = command === '' ? [] : argumentsOf(command)
@@ -585,88 +595,32 @@ async function prepare(epic: number, agent = 'claude', list: EpicList = EPIC_LIS
   return { f, host, worker, answer, created, command, args, task: args[0] ?? '' }
 }
 
-/** The ConPort commands of a task: every span in backquotes that starts one. */
-const conportCommands = (task: string): string[] => [...task.matchAll(/`([^`]*conport@[^`]*)`/g)].map((m) => m[1] ?? '')
+/** The calls of the fake conport that asked `conport prompt` for a text. */
+const promptCalls = (f: ReturnType<typeof fake>): string[][] => f.conportCalls().filter((call) => call[0] === 'prompt')
 
-test('prepare opens the chosen agent in the project root with the task as one argument', async () => {
+test('prepare opens the chosen agent in the project root with the text of conport prompt as one argument', async () => {
   const { f, answer, created, args, task, worker } = await prepare(10, 'codex')
   assert.deepEqual(answer, { ok: true, data: { terminal: 'term-1' } })
   // A terminal of the repository root, the command of the chosen agent and one argument: the task.
   assert.deepEqual(created.map(({ workspaceId, title }) => ({ workspaceId, title })), [{ workspaceId: 'ws-root', title: 'conport prepare 10' }])
+  assert.match(created[0]?.command ?? '', /^codex '/)
   assert.equal(args.length, 1)
-  assert.equal(task, prepareTask({ epic: 10, project: HANDLE, missing: 'spec' }))
-  // What the epic lacks is read afresh, its project named by the handle the CLI answered with.
-  assert.deepEqual(f.conportCalls(), [['epic', 'list', '--project', 'shop-api', '--json'], ['epic', 'agents', '--json']])
+  // The text is the one the CLI printed for the panel of Orca; the epic is not read apart from it.
+  const asked = preparePromptArgs({ epic: 10, project: 'shop-api' })
+  assert.deepEqual(f.conportCalls(), [asked, ['epic', 'agents', '--json']])
+  assert.equal(task, promptText(asked))
   // The person talks with the agent there: the terminal comes to the front.
   assert.deepEqual(f.orcaCalls(), [['terminal', 'switch', '--terminal', 'term-1', '--json']])
   assert.deepEqual(worker.refusals, [])
 })
 
-test('the task for an epic without a spec asks for a spec, its upload and the plan import', async () => {
-  const { task } = await prepare(10)
-  assert.match(task, /^Prepare epic 10 of the ConPort project /)
-  assert.match(task, /in the language they write in/)
-  assert.match(task, /Store nothing in ConPort before they approve it/)
-  assert.match(task, /Only after the person approved the spec, upload it: `[^`]* documents upload <spec file> --doc-type spec -p /)
-  // The answer of the upload is JSON: its id is the number of the spec.
-  assert.match(task, /Its answer is JSON; its `id` is the number of the new document: doc-<id>\./)
-  assert.match(task, /import it: `[^`]* plan import <plan file> --spec doc-<id of the uploaded spec> --epic 10 -p /)
-  // The plan is written in the form the import takes, with the gate the run needs.
-  assert.match(task, /### Task <n>: <title>/)
-  assert.match(task, /\*\*Goal:\*\*/)
-  assert.match(task, /\*\*Acceptance:\*\*/)
-  assert.match(task, /Gate object: \{"dir": "\.", "commands": \[/)
-  // The spec is uploaded before the plan is imported.
-  assert.ok(task.indexOf('documents upload') < task.indexOf('plan import'))
-})
-
-test('the task for an epic with a spec asks only for the plan and its import', async () => {
-  const { task } = await prepare(9)
-  assert.match(task, /^Prepare epic 9 of the ConPort project [^:]+: it has a spec, and needs a plan\./)
-  assert.doesNotMatch(task, /documents upload/)
-  // The spec is found by the links of the epic, its number goes to the import.
-  assert.match(task, /`[^`]* api links list --item_type task --item_id 9 --project /)
-  assert.match(task, /linked to the epic with `clarifies` whose type is `spec`/)
-  assert.match(task, /`[^`]* plan import <plan file> --spec doc-<number of the spec> --epic 9 -p /)
-})
-
-test('the task binds the open tasks the epic keeps to their sections and closes the rest before the import', async () => {
-  for (const epic of [9, 10]) {
-    const { task } = await prepare(epic)
-    // The tasks of the epic are read, every status, and the open ones are named.
-    assert.match(task, new RegExp(`\`[^\`]* api tasks list --parent_task_id ${epic} --status ALL --include_snoozed true --limit 200 --project [^\`]+\``))
-    assert.match(task, /Each task that is neither DONE nor CANCELLED is open\./)
-    // The open tasks the plan keeps carry the marker the import binds by, right under their heading.
-    assert.match(task, /The section of every open task the plan keeps has the line `<!-- conport-task: <id> -->` right under its `### Task <n>:` heading/)
-    // The others are closed with the person's consent, before the import.
-    assert.match(task, /close every other open task before the import, only with the person's consent: `[^`]* api tasks update --task_id <id> --status CANCELLED --project /)
-    assert.match(task, /Only after the person approved the plan, and the open tasks it does not keep are closed, import it/)
-    assert.ok(task.indexOf('tasks list --parent_task_id') < task.indexOf('plan import'))
-  }
-})
-
-test('every conport command of the task carries the project and the pinned cli version', async () => {
-  for (const epic of [9, 10]) {
-    const { task } = await prepare(epic)
-    const commands = conportCommands(task)
-    assert.ok(commands.length >= 3, task)
-    for (const command of commands) {
-      assert.ok(command.startsWith(`${NPX} `), command)
-      // The commands of the CLI take `-p`; its generic API commands name the project by `--project`.
-      const project = command.startsWith(`${NPX} api `) ? `--project ${HANDLE}` : `-p ${HANDLE}`
-      assert.ok(command.endsWith(` ${project}`), command)
-    }
-    // No ConPort command outside those: the version is pinned everywhere.
-    assert.equal(task.split('conport@').length - 1, commands.length)
-  }
-})
-
-test('a task with quotes and dollars survives the shell', async () => {
-  // A project as the CLI might name it: quotes of both kinds, a dollar and a backquote.
+test('a task with quotes and dollars survives the shell, and its project reaches the CLI as one word', async () => {
+  // A project as a person might name it: quotes of both kinds, a dollar and a backquote.
   const project = `it's "$HOME" \`x\``
-  const { task, args } = await prepare(10, 'claude', { ...EPIC_LIST, project })
+  const { f, task, args } = await prepare(10, 'claude', [], AGENTS, project)
   assert.equal(args.length, 1)
-  assert.equal(task, prepareTask({ epic: 10, project, missing: 'spec' }))
+  assert.deepEqual(promptCalls(f), [preparePromptArgs({ epic: 10, project })])
+  assert.equal(task, promptText(preparePromptArgs({ epic: 10, project })))
   for (const piece of ["'", '"', '$', '\n', '`']) assert.ok(task.includes(piece), JSON.stringify(piece))
 })
 
@@ -676,18 +630,14 @@ test('the api key never reaches the task or the command', async () => {
   try {
     const { command } = await prepare(10)
     assert.ok(command !== '')
-    assert.doesNotMatch(command, /cport_|secretvalue/)
+    doesNotMatch(command, /cport_|secretvalue/)
   } finally {
     delete process.env.CONPORT_API_KEY
   }
 })
 
-/** A machine whose CLI answers what a preparation of epic 10 reads. */
-const preparing = () =>
-  fake([
-    { match: 'epic list', stdout: json(EPIC_LIST) },
-    { match: 'epic agents', stdout: json(AGENTS) }
-  ], [SWITCHED])
+/** A machine whose CLI answers what a preparation reads. */
+const preparing = () => fake([{ match: 'epic agents', stdout: json(AGENTS) }], [SWITCHED])
 
 test('prepare refuses when the repository root is not a workspace of Orca', async () => {
   const f = preparing()
@@ -722,33 +672,41 @@ test('prepare opens its terminal in the root of the chosen project', async () =>
   const answer = await worker.request('epic.prepare', { project: 'billing-api', root: billing, epic: 10, agent: 'claude' })
   assert.equal(answer.ok, true, JSON.stringify(answer))
   assert.deepEqual(host.callsOf('terminal.create').map((c) => (c as { workspaceId: string }).workspaceId), ['ws-billing'])
+  // The CLI runs in the root of that project, for that project.
+  assert.deepEqual(promptCalls(f), [preparePromptArgs({ epic: 10, project: 'billing-api' })])
   await worker.deactivate()
 })
 
-test('prepare refuses an epic that is ready, has nothing to prepare or is gone, and an agent not found', async () => {
-  const unreadable: EpicList = {
-    ...EPIC_LIST,
-    epics: [{ id: 20, title: 'Payments', status: 'TODO', progress: { open: 2, total: 2 }, milestone: null, runnable: false, reason: 'the documents of the epic cannot be read' }]
-  }
-  const cases: Array<[number, string, EpicList, string]> = [
-    [15, 'claude', EPIC_LIST, 'epic_ready'],
-    [20, 'claude', unreadable, 'epic_not_preparable'],
-    [99, 'claude', EPIC_LIST, 'epic_not_found'],
-    [10, 'gemini', EPIC_LIST, 'agent_cannot_prepare'],
-    [10, 'aider', EPIC_LIST, 'agent_cannot_prepare']
+test('prepare tells each refusal of conport prompt in the words of the panel', async () => {
+  const cases: Array<[number, string, string, string]> = [
+    [15, 'epic_ready', 'эпик 15 уже готов к запуску', 'нажмите «Обновить» и запустите его'],
+    [20, 'epic_not_preparable', 'эпик 20 не готов к запуску по причине, которую подготовка не исправит', 'нажмите «Обновить» и посмотрите эпик во вкладке «Подготовить»'],
+    [99, 'epic_not_found', 'эпика 99 нет в проекте', 'нажмите «Обновить»']
   ]
-  for (const [epic, agent, list, code] of cases) {
-    const { answer, created } = await prepare(epic, agent, list)
-    assert.equal(answer.ok === false && answer.error.code, code, `${epic} ${agent}`)
+  for (const [epic, code, message, action] of cases) {
+    const { f, answer, created } = await prepare(epic, 'claude', [promptRefused('prepare', code)])
+    assert.deepEqual(answer, { ok: false, error: { code, message, action } }, code)
+    // The panel shows the worker's words as they are.
+    assert.deepEqual(refusalText({ code, message, action }), { what: message, action })
     assert.deepEqual(created, [])
+    // Refused before the agent is looked for.
+    assert.deepEqual(f.conportCalls(), [preparePromptArgs({ epic, project: 'shop-api' })])
+  }
+})
+
+test('a refusal of conport prompt the panel words by its code reaches it as the CLI gave it, and a text missing is bad output', async () => {
+  const noKey = await prepare(10, 'claude', [{ match: 'prompt prepare ', code: 2, stdout: json({ ok: false, error: NO_KEY }) }])
+  assert.deepEqual(noKey.answer, { ok: false, error: NO_KEY })
+  assert.deepEqual(noKey.created, [])
+  for (const body of [{ ok: true }, { ok: true, text: '' }, { ok: true, text: 7 }]) {
+    const odd = await prepare(10, 'claude', [{ match: 'prompt prepare ', stdout: json(body) }])
+    assert.deepEqual(odd.answer, { ok: false, error: { code: 'bad_output', message: 'conport ответил без текста задания', action: 'обновите conport' } })
+    assert.deepEqual(odd.created, [])
   }
 })
 
 test('the agent that prepared an epic is remembered for the project', async () => {
-  const f = fake([
-    { match: 'epic list', stdout: json(EPIC_LIST) },
-    { match: 'epic agents', stdout: json(AGENTS) }
-  ], [SWITCHED])
+  const f = preparing()
   const host = f.host({ 'agents.list': { agents: [] } })
   const worker = await mountWorker(f.worker, { host })
   const before = await worker.request('agents.get', { project: HANDLE, root: f.root })
@@ -771,14 +729,19 @@ test('prepare refuses an agent that takes no positional request, found or not, a
       { id: 'cursor', label: 'Cursor', command: 'cursor-agent', found: false }
     ]
   }
-  const opencode = await prepare(10, 'opencode', EPIC_LIST, agents)
-  assert.equal(opencode.answer.ok === false && opencode.answer.error.code, 'agent_cannot_prepare')
-  assert.deepEqual(opencode.created, [])
-  const cursor = await prepare(10, 'cursor', EPIC_LIST, agents)
+  for (const agent of ['opencode', 'gemini', 'aider']) {
+    const refused = await prepare(10, agent, [], agents)
+    assert.deepEqual(refused.answer, {
+      ok: false,
+      error: { code: 'agent_cannot_prepare', message: `агент «${agent}» не принимает задание при запуске`, action: 'выберите Claude Code, Codex или Cursor' }
+    })
+    assert.deepEqual(refused.created, [])
+  }
+  const cursor = await prepare(10, 'cursor', [], agents)
   assert.equal(cursor.answer.ok === false && cursor.answer.error.code, 'agent_not_found')
   // Cursor starts by its own command when found.
   const found = { agents: agents.agents.map((a) => (a.id === 'cursor' ? { ...a, found: true } : a)) }
-  const started = await prepare(10, 'cursor', EPIC_LIST, found)
+  const started = await prepare(10, 'cursor', [], found)
   assert.equal(started.answer.ok, true)
   assert.match(started.command, /^cursor-agent '/)
 })
@@ -792,168 +755,82 @@ test('tasks list reads task list json', async () => {
 })
 
 /**
- * Hands `task` of `list` to `agent` over the fake CLI, to do it or to review it; the answer, the
- * terminal and the one argument the agent gets.
+ * Hands `task` to `agent` over the fake CLI, to do it, to review it or to fix it; `conport prompt`
+ * answers by `conport` when given. The answer, the terminal and the one argument the agent gets.
  */
-async function hand(task: number, mode: HandMode, agent = 'claude', list: TaskList = TASK_LIST) {
-  const f = fake([
-    { match: 'task list', stdout: json(list) },
-    { match: 'epic agents', stdout: json(AGENTS) }
-  ], [SWITCHED])
+async function hand(task: number, mode: HandMode, agent = 'claude', conport: FakeAnswer[] = [], project = 'shop-api') {
+  const f = fake([...conport, { match: 'epic agents', stdout: json(AGENTS) }], [SWITCHED])
   const host = f.host({ 'agents.list': { agents: [] } })
   const worker = await mountWorker(f.worker, { host })
-  const answer = await worker.request('task.hand', { project: 'shop-api', root: f.root, task, agent, mode })
+  const answer = await worker.request('task.hand', { project, root: f.root, task, agent, mode })
   const created = host.callsOf('terminal.create') as Array<{ workspaceId: string; title: string; command: string }>
   const command = created[0]?.command ?? ''
   const args = command === '' ? [] : argumentsOf(command)
-  const preparer = await worker.request('agents.get', { project: 'shop-api', root: f.root })
+  const preparer = await worker.request('agents.get', { project, root: f.root })
   await worker.deactivate()
   return { f, answer, created, command, args, task: args[0] ?? '', remembered: preparer.ok ? preparer.data.preparer : null }
 }
 
-/** The first step of a handed task: `init` of ConPort hands out no questions about the project. */
-const INIT_QUIET = 'If you call `init` of ConPort, call it with `questions=false`: this run takes up no questions about the project.'
-
-/** Every ConPort command of a task names the pinned CLI and the project, and no other one is in it. */
-function pinned(task: string): void {
-  const commands = conportCommands(task)
-  assert.ok(commands.length >= 3, task)
-  for (const command of commands) {
-    assert.ok(command.startsWith(`${NPX} `), command)
-    const project = command.startsWith(`${NPX} api `) ? `--project ${HANDLE}` : `-p ${HANDLE}`
-    assert.ok(command.endsWith(` ${project}`), command)
+test('hand a task opens the chosen agent with the text of conport prompt as one argument, in each mode', async () => {
+  const cases: Array<[number, HandMode, string]> = [[41, 'do', 'conport task 41'], [42, 'review', 'conport review 42'], [46, 'fix', 'conport fix 46']]
+  for (const [id, mode, title] of cases) {
+    const { f, answer, created, args, task, remembered } = await hand(id, mode, 'codex')
+    assert.deepEqual(answer, { ok: true, data: { terminal: 'term-1' } })
+    // A terminal of the repository root, the command of the chosen agent and one argument: the task.
+    assert.deepEqual(created.map(({ workspaceId, title }) => ({ workspaceId, title })), [{ workspaceId: 'ws-root', title }])
+    assert.match(created[0]?.command ?? '', /^codex '/)
+    assert.equal(args.length, 1)
+    // The text is the one the CLI printed for the panel of Orca; the task is not read apart from it.
+    const asked = taskPromptArgs({ task: id, project: 'shop-api', mode, agent: 'codex', root: f.root })
+    assert.deepEqual(f.conportCalls(), [asked, ['epic', 'agents', '--json'], ['epic', 'agents', '--json']])
+    assert.equal(task, promptText(asked))
+    assert.deepEqual(f.orcaCalls(), [['terminal', 'switch', '--terminal', 'term-1', '--json']])
+    // The agent picked is the one the sheet offers first next time.
+    assert.equal(remembered, 'codex')
   }
-  assert.equal(task.split('conport@').length - 1, commands.length)
-}
-
-test('hand a task opens the chosen agent with the task as one argument', async () => {
-  const { f, answer, created, args, task, remembered } = await hand(41, 'do', 'codex')
-  assert.deepEqual(answer, { ok: true, data: { terminal: 'term-1' } })
-  // A terminal of the repository root, the command of the chosen agent and one argument: the task.
-  assert.deepEqual(created.map(({ workspaceId, title }) => ({ workspaceId, title })), [{ workspaceId: 'ws-root', title: 'conport task 41' }])
-  assert.match(created[0]?.command ?? '', /^codex '/)
-  assert.equal(args.length, 1)
-  assert.equal(task, handTask({ task: 41, project: HANDLE, mode: 'do', agent: 'codex', root: f.root }))
-  // The task is read afresh; its project is named by the handle the CLI answered with.
-  assert.deepEqual(f.conportCalls(), [['task', 'list', '--project', 'shop-api', '--json'], ['epic', 'agents', '--json'], ['epic', 'agents', '--json']])
-  assert.deepEqual(f.orcaCalls(), [['terminal', 'switch', '--terminal', 'term-1', '--json']])
-  // The agent is taken by the conport skill: IN_PROGRESS, the work, a report in the journal of the task.
-  assert.match(task, /^Do task 41 of the ConPort project prk7m2qx9d/)
-  assert.ok(task.includes(`\n1. ${INIT_QUIET} Read the task: `), task)
-  assert.match(task, /conport skill/)
-  assert.match(task, /in the language they write in/)
-  assert.match(task, /`[^`]* api tasks update --task_id 41 --status IN_PROGRESS --project prk7m2qx9d`/)
-  assert.match(task, /`[^`]* journal add --task 41 --kind report --author implementer:codex --body-file <file> -p prk7m2qx9d`/)
-  assert.ok(task.indexOf('--status IN_PROGRESS') < task.indexOf('--kind report'))
-  assert.doesNotMatch(task, /--kind review/)
-  pinned(task)
-  // The work is done apart from the main working copy: a worktree of its own beside the repository, on the task's branch.
-  const branch = `task-${41}`
-  const worktree = `git -C ${f.root} worktree add ${join(dirname(f.root), `repo-${branch}`)} -b ${branch}`
-  assert.ok(task.includes(`\`${worktree}\``), task)
-  assert.match(task, /never in the working copy of this terminal/)
-  // It is committed there by Conventional Commits, with no word of an AI; the person merges it.
-  assert.match(task, /Conventional Commits/)
-  assert.match(task, /never mentions an AI, an assistant or a model, and carries no Co-Authored-By line/)
-  assert.match(task, /Never merge the branch and never push it: merging it is the person's/)
-  // The report names the branch and its commit.
-  assert.ok(task.includes(`the branch \`${branch}\` and its last commit`), task)
-  const at = (text: string): number => task.indexOf(text)
-  assert.ok(at('--status IN_PROGRESS') < at(worktree))
-  assert.ok(at(worktree) < at('Conventional Commits'))
-  assert.ok(at('Conventional Commits') < at('--kind report'))
-  assert.doesNotMatch(task, /--status DONE/)
-  // The agent picked is the one the sheet offers first next time.
-  assert.equal(remembered, 'codex')
 })
 
-test('review a task asks the agent for a verdict in the journal', async () => {
-  const { f, answer, created, args, task } = await hand(42, 'review', 'claude')
-  assert.equal(answer.ok, true)
-  assert.deepEqual(created.map((c) => c.title), ['conport review 42'])
-  assert.equal(args.length, 1)
-  assert.equal(task, handTask({ task: 42, project: HANDLE, mode: 'review', agent: 'claude', root: f.root }))
-  assert.match(task, /^Review task 42 of the ConPort project prk7m2qx9d/)
-  assert.ok(task.includes(`\n1. ${INIT_QUIET} Read the task: `), task)
-  // It reads the whole journal: the brief, the report, the fixes.
-  assert.match(task, /`[^`]* journal get --task 42 -p prk7m2qx9d`/)
-  assert.match(task, /brief, the report and the fixes/)
-  // Its verdict goes to the journal as a review, signed apart from the author of the report.
-  assert.match(task, /`[^`]* journal add --task 42 --kind review --verdict <verdict> --author reviewer:claude --body-file <file> -p prk7m2qx9d`/)
-  assert.match(task, /`approve`/)
-  assert.match(task, /`changes_requested`/)
-  assert.match(task, /not the author of the report/)
-  assert.doesNotMatch(task, /--kind report|--status IN_PROGRESS/)
-  pinned(task)
-  // It checks the branch the report names, in its worktree.
-  assert.ok(task.includes(`the branch the report names (\`task-${42}\` unless it names another)`), task)
-  assert.ok(task.includes(`\`git -C ${f.root} worktree list\``), task)
-  // On approve, with the person's yes, the task is closed DONE, its resolution added to the description.
-  const close = `${NPX} api tasks update --task_id 42 --status DONE --resolution <resolution> --project ${HANDLE}`
-  assert.ok(task.includes(`\`${close}\``), task)
-  assert.match(task, /ask the person whether to close the task; only with their yes/)
-  assert.match(task, /`## Resolution` section; the description itself stays as it is/)
-  assert.ok(task.indexOf('--kind review') < task.indexOf('--status DONE'))
-  assert.ok(task.indexOf('ask the person whether to close') < task.indexOf('--status DONE'))
-})
-
-/** The task list with task 46 in progress after a review that asked for changes. */
-const SENT_BACK: TaskList = {
-  ...TASK_LIST,
-  tasks: [...TASK_LIST.tasks, { id: 46, title: 'Trim the export', kind: 'task', status: 'IN_PROGRESS', priority: 3, changes_requested: true }]
-}
-
-test('fix a task the review sent back: its branch, the latest review, a fix entry', async () => {
-  const { f, answer, created, args, task } = await hand(46, 'fix', 'codex', SENT_BACK)
-  assert.equal(answer.ok, true)
-  assert.deepEqual(created.map((c) => c.title), ['conport fix 46'])
-  assert.equal(args.length, 1)
-  assert.equal(task, handTask({ task: 46, project: HANDLE, mode: 'fix', agent: 'codex', root: f.root }))
-  assert.match(task, /^Fix task 46 of the ConPort project prk7m2qx9d after its review asked for changes/)
-  assert.ok(task.includes(`\n1. ${INIT_QUIET} Read the task: `), task)
-  assert.match(task, /`[^`]* journal get --task 46 -p prk7m2qx9d`/)
-  assert.match(task, /the latest review in it: each of its findings is what to fix/)
-  // It goes on in the branch of the task and its worktree, never in this working copy.
-  const branch = `task-${46}`
-  assert.ok(task.includes(`\`git -C ${f.root} worktree list\``), task)
-  assert.ok(task.includes(`\`git -C ${f.root} worktree add ${join(dirname(f.root), `repo-${branch}`)} ${branch}\``), task)
-  assert.match(task, /never in the working copy of this terminal/)
-  assert.match(task, /Conventional Commits/)
-  assert.match(task, /never mentions an AI, an assistant or a model, and carries no Co-Authored-By line/)
-  // The fix goes to the journal, signed as the implementer: it moves the task back to review.
-  assert.match(task, /`[^`]* journal add --task 46 --kind fix --author implementer:codex --body-file <file> -p prk7m2qx9d`/)
-  assert.ok(task.indexOf('worktree list') < task.indexOf('Conventional Commits'))
-  assert.ok(task.indexOf('Conventional Commits') < task.indexOf('--kind fix'))
-  // It neither takes the task again nor creates the branch anew, reports or closes.
-  assert.doesNotMatch(task, /--status IN_PROGRESS|--status DONE|--kind report|--kind review| -b /)
-  pinned(task)
-})
-
-test('the review tells what follows a request for changes', async () => {
-  const { task } = await hand(42, 'review', 'claude')
-  assert.match(task, /On `changes_requested`, tell the person the task waits for its fixes: in the ConPort Epics panel of Orca they press refresh and hand it to an agent to fix/)
-})
-
-test('hand refuses a task that is gone or moved, and an agent that cannot take it', async () => {
-  const cursor = { agents: [...AGENTS.agents, { id: 'cursor', label: 'Cursor', command: 'cursor-agent', found: false }] }
+test('hand tells each refusal of conport prompt in the words of the panel', async () => {
   const cases: Array<[number, HandMode, string, string]> = [
-    [99, 'do', 'claude', 'task_not_found'],
-    // Done by someone else meanwhile: a task in review is not done again, a todo one not reviewed.
-    [42, 'do', 'claude', 'task_moved'],
-    [41, 'review', 'claude', 'task_moved'],
-    [43, 'review', 'claude', 'task_moved'],
-    // Only a task in progress that the review sent back is fixed: not one an agent is at, nor a todo one.
-    [43, 'fix', 'claude', 'task_moved'],
-    [41, 'fix', 'claude', 'task_moved'],
-    [46, 'do', 'claude', 'task_moved'],
-    [41, 'do', 'gemini', 'agent_cannot_prepare']
+    [99, 'do', 'task_not_found', 'задачи 99 нет среди открытых задач вне эпиков'],
+    // Done by someone else meanwhile: each mode says what the task no longer waits for.
+    [42, 'do', 'task_moved', 'задачу 42 уже взяли в работу'],
+    [41, 'review', 'task_moved', 'задача 41 не ждёт проверки'],
+    [43, 'fix', 'task_moved', 'задача 43 не ждёт исправлений']
   ]
-  for (const [task, mode, agent, code] of cases) {
-    const { answer, created } = await hand(task, mode, agent, SENT_BACK)
-    assert.equal(answer.ok === false && answer.error.code, code, `${task} ${mode} ${agent}`)
+  for (const [id, mode, code, message] of cases) {
+    const { f, answer, created, remembered } = await hand(id, mode, 'claude', [promptRefused('task', code)])
+    const error = { code, message, action: 'нажмите «Обновить»' }
+    assert.deepEqual(answer, { ok: false, error }, `${id} ${mode}`)
+    assert.deepEqual(refusalText(error), { what: message, action: error.action })
     assert.deepEqual(created, [])
+    assert.equal(remembered, null)
+    assert.deepEqual(promptCalls(f), [taskPromptArgs({ task: id, project: 'shop-api', mode, agent: 'claude', root: f.root })])
   }
-  const f = fake([{ match: 'task list', stdout: json(TASK_LIST) }, { match: 'epic agents', stdout: json(cursor) }])
+})
+
+test('a refusal of conport prompt whose code is not about the thing asked for reaches the panel as the CLI sent it', async () => {
+  // A code of an epic on a task, and of a task on an epic: there is no number to word it by.
+  const english = (code: string) => ({ code, message: `${code.replace(/_/g, ' ')}, as the CLI words it`, action: 'do what the CLI says' })
+  const onTask = await hand(41, 'do', 'claude', [promptRefused('task', 'epic_not_found')])
+  assert.deepEqual(onTask.answer, { ok: false, error: english('epic_not_found') })
+  assert.deepEqual(onTask.created, [])
+  const onEpic = await prepare(10, 'claude', [promptRefused('prepare', 'task_moved')])
+  assert.deepEqual(onEpic.answer, { ok: false, error: english('task_moved') })
+  assert.deepEqual(onEpic.created, [])
+})
+
+test('hand refuses an agent that cannot take a task before the CLI is asked, and one that is not found', async () => {
+  const refused = await hand(41, 'do', 'gemini')
+  assert.deepEqual(refused.answer, {
+    ok: false,
+    error: { code: 'agent_cannot_prepare', message: 'агент «gemini» не принимает задание при запуске', action: 'выберите Claude Code, Codex или Cursor' }
+  })
+  // The CLI takes only an agent that can: it is not asked for a text the agent cannot be given.
+  assert.deepEqual(promptCalls(refused.f), [])
+  assert.deepEqual(refused.created, [])
+  const cursor = { agents: [...AGENTS.agents, { id: 'cursor', label: 'Cursor', command: 'cursor-agent', found: false }] }
+  const f = fake([{ match: 'epic agents', stdout: json(cursor) }])
   const worker = await mountWorker(f.worker, { host: f.host({ 'agents.list': { agents: [] } }) })
   const answer = await worker.request('task.hand', { project: 'shop-api', root: f.root, task: 41, agent: 'cursor', mode: 'do' })
   assert.equal(answer.ok === false && answer.error.code, 'agent_not_found')
@@ -965,10 +842,12 @@ test('a task with quotes in its project survives the shell, and the api key neve
   const key = 'cport_live_secretvalue'
   process.env.CONPORT_API_KEY = key
   try {
-    const { f, task, args, command } = await hand(41, 'do', 'claude', { ...TASK_LIST, project })
+    const { f, task, args, command } = await hand(41, 'do', 'claude', [], project)
     assert.equal(args.length, 1)
-    assert.equal(task, handTask({ task: 41, project, mode: 'do', agent: 'claude', root: f.root }))
-    assert.doesNotMatch(command, /cport_|secretvalue/)
+    const asked = taskPromptArgs({ task: 41, project, mode: 'do', agent: 'claude', root: f.root })
+    assert.deepEqual(promptCalls(f), [asked])
+    assert.equal(task, promptText(asked))
+    doesNotMatch(command, /cport_|secretvalue/)
   } finally {
     delete process.env.CONPORT_API_KEY
   }
@@ -1005,6 +884,8 @@ interface StartCase {
   main?: (row: WorktreeRow) => Partial<WorktreeRow>
   /** Answers of the fake orca tried before the usual ones. */
   orca?: FakeAnswer[]
+  /** Answers of the fake conport tried before the usual ones. */
+  conport?: FakeAnswer[]
 }
 
 /** Where the fake orca puts a working copy it creates for `epic`. */
@@ -1015,6 +896,7 @@ async function startMachine(options: StartCase = {}) {
   const base = options.base === undefined ? 'main' : options.base
   const f = fake(
     [
+      ...(options.conport ?? []),
       { match: 'epic list', stdout: json(EPIC_LIST) },
       { match: 'epic agents', stdout: json(options.agents ?? AGENTS) }
     ],
@@ -1156,13 +1038,17 @@ test('epic.start opens the SDD terminal in the working copy, not in the root, an
   assert.deepEqual(switched, [['terminal', 'switch', '--terminal', EPIC_TERMINAL, '--json']])
 })
 
-test('epic.start gives the harness the task as one argument', async () => {
+test('epic.start gives the harness the text of conport prompt as one argument', async () => {
   for (const harness of ['claude', 'codex']) {
-    const { copy, command, args, task } = await start({ harness, project: 'shop-api' })
+    const { f, copy, command, args, task } = await start({ harness, project: 'shop-api' })
     assert.ok(command.startsWith(`${harness} '`), command)
     assert.equal(args.length, 1)
-    // The project is the handle the CLI answered with, the base the branch of the main working tree.
-    assert.equal(task, epicTask({ epic: 7, project: HANDLE, worktree: copy, base: 'main', harness, roles: TYPES }))
+    // The project is the handle the CLI answered with, the base the branch of the main working tree,
+    // the working copy the one orca created; the types reach the CLI for Claude Code only.
+    const asked = epicPromptArgs({ epic: 7, project: HANDLE, harness, worktree: copy, base: 'main', roles: TYPES })
+    assert.deepEqual(f.conportCalls().at(-1), asked)
+    assert.equal(asked.includes(TYPES.reviewer), harness === 'claude')
+    assert.equal(task, promptText(asked))
     for (const piece of ['"', '\n', '`']) assert.ok(task.includes(piece), JSON.stringify(piece))
   }
 })
@@ -1170,11 +1056,13 @@ test('epic.start gives the harness the task as one argument', async () => {
 test('a base branch the shell would read reaches the harness inside the one argument', async () => {
   // A name git allows for a branch: a quote, a dollar with a bracket, a backquote, a semicolon.
   const base = "it's-$(x)-`y`;z"
-  const { copy, created, args, task, answer } = await start({ base })
+  const { f, copy, created, args, task, answer } = await start({ base })
   assert.equal(answer.ok, true)
   assert.deepEqual(created, [CREATE_COPY(base)])
   assert.equal(args.length, 1)
-  assert.equal(task, epicTask({ epic: 7, project: HANDLE, worktree: copy, base, harness: 'claude', roles: TYPES }))
+  const asked = epicPromptArgs({ epic: 7, project: HANDLE, harness: 'claude', worktree: copy, base, roles: TYPES })
+  assert.deepEqual(f.conportCalls().at(-1), asked)
+  assert.equal(task, promptText(asked))
   assert.ok(task.includes(base))
 })
 
@@ -1208,10 +1096,11 @@ test('epic.start checks only the command of the harness', async () => {
     ]
   }
   const roles = { implementer: 'no-such:type', reviewer: 'nobody', gapHunter: 'none.at:all', finalReviewer: 'absent' }
-  const { f, answer, command, task } = await start({ agents, roles })
+  const { f, answer, command, copy } = await start({ agents, roles })
   assert.equal(answer.ok, true)
   assert.ok(command.startsWith("claude-code '"), command)
-  assert.match(task, /`no-such:type`/)
+  // The types go to the CLI as they were chosen: nobody checks they are installed.
+  assert.deepEqual(f.conportCalls().at(-1), epicPromptArgs({ epic: 7, project: HANDLE, harness: 'claude', worktree: copy, base: 'main', roles }))
   assert.equal(f.conportCalls().filter((call) => call[1] === 'agents').length, 1)
 })
 
@@ -1222,8 +1111,13 @@ test('epic.start runs no epic run and no check', async () => {
   const { f, answer, command, worker } = await startOn(machine)
   await worker.deactivate()
   assert.equal(answer.ok, true)
-  // Every call of the three programs: the epic and the agent kinds are read, nothing else of ConPort.
-  assert.deepEqual(f.conportCalls(), [EPIC_LIST_CALL, EPIC_AGENTS_CALL])
+  // Every call of the three programs: the epic and the agent kinds are read, then the text is asked
+  // for once the working copy is there; nothing else of ConPort.
+  assert.deepEqual(f.conportCalls(), [
+    EPIC_LIST_CALL,
+    EPIC_AGENTS_CALL,
+    epicPromptArgs({ epic: 7, project: HANDLE, harness: 'claude', worktree: copy, base: 'main', roles: TYPES })
+  ])
   assert.deepEqual(f.gitCalls(), [['-C', f.root, 'for-each-ref', '--format=%(refname)', 'refs/heads/epic-7', 'refs/heads/epic7/*']])
   assert.deepEqual(f.orcaCalls(), [
     ['worktree', 'list', '--repo', `path:${f.root}`, '--limit', '10000', '--json'],
@@ -1256,8 +1150,10 @@ test('epic.start by the workflow puts no role type into the task', async () => {
   const { f, answer, args, task } = await start({ way: 'workflow', roles, base: 'trunk' })
   assert.equal(answer.ok, true)
   assert.equal(args.length, 1)
-  assert.equal(task, epicWorkflowTask({ epic: 7, project: HANDLE, root: f.root, base: 'trunk' }))
-  for (const type of [...Object.values(roles), ...Object.values(TYPES)]) assert.equal(task.includes(type), false, type)
+  const asked = epicPromptArgs({ epic: 7, project: HANDLE, harness: 'claude', root: f.root, base: 'trunk', way: 'workflow' })
+  assert.deepEqual(f.conportCalls().at(-1), asked)
+  assert.equal(task, promptText(asked))
+  for (const type of [...Object.values(roles), ...Object.values(TYPES)]) assert.equal(asked.includes(type), false, type)
 })
 
 test('epic.start refuses an epic that is gone', async () => {
@@ -1320,7 +1216,7 @@ test('epic.start refuses a role type that is not a plain name', async () => {
   // Only Claude Code by the SDD skill is told the types: another harness never reads them.
   const codex = await start({ harness: 'codex', roles: { ...TYPES, reviewer: 'my reviewer' } })
   assert.equal(codex.answer.ok, true)
-  assert.equal(codex.task.includes('my reviewer'), false)
+  assert.equal(codex.f.conportCalls().flat().includes('my reviewer'), false)
 })
 
 test('epic.start refuses a harness that takes no task', async () => {
@@ -1435,6 +1331,34 @@ test('a refusal of orca is returned as is', async () => {
     assert.deepEqual(storage, {})
     assert.deepEqual(switched, [])
   }
+})
+
+test('epic.start tells each refusal of conport prompt in the words of the panel, the copy left for the next start', async () => {
+  const cases: Array<[string, string, string]> = [
+    ['epic_not_found', 'эпика 7 нет в проекте', 'нажмите «Обновить»'],
+    ['epic_not_ready', 'у эпика 7 нет спецификации или плана', 'подготовьте эпик на вкладке «Подготовить»'],
+    ['way_needs_claude', 'способ «/conport:epic» есть только у Claude Code с плагином conport', 'выберите харнесс Claude Code'],
+    ['role_invalid', 'тип субагента — не простое имя', 'выберите тип роли из списка'],
+    ['agent_cannot_prepare', 'харнесс «claude» не принимает задание при запуске', 'выберите Claude Code, Codex или Cursor']
+  ]
+  for (const [code, message, action] of cases) {
+    // The CLI checks again what the worker checked: the epic may have changed in between.
+    const { answer, created, opened, storage, host } = await start({ conport: [promptRefused('epic', code)] })
+    assert.deepEqual(answer, { ok: false, error: { code, message, action } }, code)
+    assert.deepEqual(refusalText({ code, message, action }), { what: message, action })
+    // The text is asked for after the copy is created, before any terminal is opened.
+    assert.deepEqual(created, [CREATE_COPY('main')])
+    assert.deepEqual(opened, [])
+    assert.deepEqual(host.callsOf('terminal.create'), [])
+    assert.deepEqual(storage, {})
+  }
+  // Another refusal reaches the panel as the CLI gave it, and an answer without a text is bad output.
+  const noKey = await start({ way: 'workflow', conport: [{ match: 'prompt epic ', code: 2, stdout: json({ ok: false, error: NO_KEY }) }] })
+  assert.deepEqual(noKey.answer, { ok: false, error: NO_KEY })
+  assert.deepEqual(noKey.opened, [])
+  const textless = await start({ conport: [{ match: 'prompt epic ', stdout: json({ ok: true }) }] })
+  assert.deepEqual(textless.answer, { ok: false, error: { code: 'bad_output', message: 'conport ответил без текста задания', action: 'обновите conport' } })
+  assert.deepEqual(textless.opened, [])
 })
 
 test('epic.start refuses when the branches cannot be listed', async () => {

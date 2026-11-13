@@ -1,0 +1,12 @@
+{
+  "name": "conport-orca",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "orca plugin types . --json > /dev/null && tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "5.9.3"
+  }
+}

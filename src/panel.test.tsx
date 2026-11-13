@@ -1,5 +1,7 @@
 // The panel over a worker that answers from the fake conport and orca executables, or over
 // stubbed requests where only the panel is under test.
+// The assert of orca/testing is Node's, but its typings leave doesNotMatch out.
+import { doesNotMatch } from 'node:assert/strict'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -159,7 +161,7 @@ test('projects follow the orca repo list order and names', async () => {
     'Папка без git — запускать нечего',
     'Нет проекта ConPort'
   ])
-  assert.doesNotMatch(textOf(view), new RegExp(HANDLE))
+  doesNotMatch(textOf(view), new RegExp(HANDLE))
 })
 
 test('the project search narrows the list by name', async () => {
@@ -180,7 +182,7 @@ test('a project bound by its handle is not named by it in the picker', async () 
   view = await mount(panel, { host })
   assert.equal(pickerOf(view)?.props.title, 'Shop')
   await view.toggle({ testId: 'project-picker' })
-  assert.doesNotMatch(textOf(view), new RegExp(HANDLE))
+  doesNotMatch(textOf(view), new RegExp(HANDLE))
 })
 
 test('a project without a binding offers to bind it', async () => {
@@ -280,7 +282,7 @@ test('choosing another project reads its epics and tasks and keeps the epic open
 test('a slow answer for a project left meanwhile is dropped', async () => {
   const billingEpics: EpicList = {
     project: 'prbi11ngq2',
-    epics: [{ id: 30, title: 'Invoices', status: 'TODO', progress: { open: 2, total: 2 }, milestone: null, runnable: true, reason: null }]
+    epics: [{ id: 30, title: 'Invoices', status: 'TODO', progress: { open: 2, total: 2 }, milestone: null, runnable: true, reason: null, ready: false }]
   }
   const pending: Array<() => void> = []
   let first = true
@@ -312,7 +314,7 @@ test('a slow answer for a project left meanwhile is dropped', async () => {
   await Promise.all([toBilling, toShop])
   // The panel shows Shop with its own epic open, and the epic starts in Shop with Shop's handle.
   assert.equal(pickerOf(view)?.props.title, 'Shop')
-  assert.doesNotMatch(textOf(view), /Invoices/)
+  doesNotMatch(textOf(view), /Invoices/)
   assert.deepEqual(inputsOf(calls, 'epic.session').at(-1), { project: HANDLE, root: ROOT, epic: 15 })
   await view.press({ text: 'Запустить' })
   const sent = inputsOf(calls, 'epic.start') as Array<{ project: string; root: string; epic: number }>
@@ -494,7 +496,7 @@ test('the epic row tells not started and in progress from conport counts, ready 
     ['Закрыто 6 из 6', 100]
   ])
   // The state comes from the tasks in ConPort: nothing names a phase.
-  assert.doesNotMatch(textOf(view), /идёт|остановлен|подготовка/)
+  doesNotMatch(textOf(view), /идёт|остановлен|подготовка/)
 })
 const EPIC = { project: HANDLE, root: ROOT, epic: 15 }
 const ROLE_LABELS = ['Исполнитель', 'Ревьюер', 'Поиск пробелов', 'Итоговое ревью'] as const
@@ -571,7 +573,7 @@ test('the epic screen offers the way, the harness and four roles with the defaul
   assert.equal(places.includes(-1), false, JSON.stringify(places))
   assert.deepEqual(places, [...places].sort((a, b) => a - b))
   // The words of the dispatcher are gone.
-  assert.doesNotMatch(drawn, /Проверяющий|Итоговая проверка|Команда|запомнится для проекта/)
+  doesNotMatch(drawn, /Проверяющий|Итоговая проверка|Команда|запомнится для проекта/)
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.warnings, [])
 })
@@ -644,7 +646,7 @@ test('the role lists are off with the reason when the list cannot be read', asyn
     view.find({ testId: 'roles-action' })?.text,
     'установите Claude Code или сделайте claude видимым в PATH приложения Orca и повторите'
   )
-  assert.doesNotMatch(textOf(view), /did not answer|install Claude Code/)
+  doesNotMatch(textOf(view), /did not answer|install Claude Code/)
   // The start is not held back.
   await view.press({ text: 'Запустить' })
   assert.deepEqual((inputsOf(calls, 'epic.start')[0] as { roles: unknown }).roles, {
@@ -667,7 +669,7 @@ test('when the agents cannot be read the roles do not say the harness is not fou
   view = await mount(panel, { host, persisted: at(15) })
   // The refusal itself is told where the harness is chosen.
   assert.match(textOf(view), /ConPort не ответил/)
-  assert.doesNotMatch(textOf(view), /Харнесс не найден/)
+  doesNotMatch(textOf(view), /Харнесс не найден/)
   assert.equal(view.find({ testId: 'roles-note' }), null)
   assert.equal(view.find({ testId: 'roles-action' }), null)
   // The lists stay off by the default types, and nothing can be started.
@@ -756,7 +758,7 @@ test('a stored harness that is no longer found is shown as missing and another c
     assert.deepEqual(listsOff(view), [true, true, true, true])
     assert.deepEqual(typesOf(view), DEFAULT_TYPES)
     assert.equal(view.find({ testId: 'roles-note' })?.text, 'Харнесс не найден: типы его субагентов не читаются')
-    assert.doesNotMatch(textOf(view), /Список субагентов недоступен/)
+    doesNotMatch(textOf(view), /Список субагентов недоступен/)
     const harness = view.find({ label: 'Харнесс' })
     assert.equal(harness?.props.value, 'cursor')
     const options = harness?.props.options as Array<{ value: string; label: string; disabled?: boolean }>
@@ -880,7 +882,7 @@ test('start sends the way, the harness and the roles and says where the agent is
       }
     ])
     assert.equal(noticeOf(view), said, way)
-    assert.doesNotMatch(textOf(view), /Агенты начинают|причина будет там/)
+    doesNotMatch(textOf(view), /Агенты начинают|причина будет там/)
     // The screen read the session and the tasks again, and the types of the harness not again.
     assert.deepEqual(['epic.session', 'epic.tasks', 'subagents.get'].map((name) => inputsOf(calls, name).length), [2, 2, 1], way)
     await view.unmount()
@@ -1115,7 +1117,7 @@ test('the epic screen has no stop and no continue and asks for no run', async ()
     const { host, calls } = stub({ 'epic.session': () => ok(state) })
     view = await mount(panel, { host, persisted: at(7) })
     assert.ok(view.find({ label: 'Способ' }))
-    assert.doesNotMatch(textOf(view), /Остановить|Продолжить|Эпик держат|Агенты остановились|Эпик ждёт вашего ответа|epic answer|epic status|epic run/)
+    doesNotMatch(textOf(view), /Остановить|Продолжить|Эпик держат|Агенты остановились|Эпик ждёт вашего ответа|epic answer|epic status|epic run/)
     assert.equal(noRun(calls), true)
     assert.deepEqual(view.errors, [])
     assert.deepEqual(view.refusals, [])
@@ -1125,7 +1127,7 @@ test('the epic screen has no stop and no continue and asks for no run', async ()
   // Nothing of the run is left in the sources of the panel either.
   for (const file of ['panel.tsx', 'text.ts', 'panel.check.ts']) {
     const source = readFileSync(join(SOURCES, file), 'utf8')
-    assert.doesNotMatch(source, /run\.(get|start|stop)|EpicStatus|RunPhase|HeldBox|Unasked|StopControl|answerCommand|statusCommand|holdReason|failureText/, file)
+    doesNotMatch(source, /run\.(get|start|stop)|EpicStatus|RunPhase|HeldBox|Unasked|StopControl|answerCommand|statusCommand|holdReason|failureText/, file)
   }
 })
 
@@ -1137,7 +1139,7 @@ test('a missing api key shows the cli refusal in the panel', async () => {
   assert.equal(box?.props.title, 'нет ключа API ConPort')
   assert.ok(box?.text.includes('впишите CONPORT_API_KEY в ~/.config/conport/.env и повторите'), box?.text)
   assert.match(JSON.stringify(box), /no_api_key/)
-  assert.doesNotMatch(textOf(view), /is not set|put CONPORT_API_KEY/)
+  doesNotMatch(textOf(view), /is not set|put CONPORT_API_KEY/)
 })
 
 /** The words for a refusal the panel does not know: they name no program, it may be conport or orca. */
@@ -1186,8 +1188,8 @@ test('every refused action says russian: the cli by its code, the worker in its 
     assert.equal(box?.props.title, what, error.code)
     assert.match(JSON.stringify(box), new RegExp(action.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), error.code)
     assert.match(JSON.stringify(box), new RegExp(error.code), error.code)
-    assert.doesNotMatch(textOf(view), /ENOENT/, error.code)
-    if (what !== error.message) assert.doesNotMatch(textOf(view), new RegExp(error.message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), error.code)
+    doesNotMatch(textOf(view), /ENOENT/, error.code)
+    if (what !== error.message) doesNotMatch(textOf(view), new RegExp(error.message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), error.code)
     await view.unmount()
     view = undefined
   }
@@ -1207,7 +1209,7 @@ test('every refusal of the commands left is said in russian with one action, an 
     assert.notDeepEqual(text, unknown, code)
     assert.match(text.what, /[а-яё]/, code)
     assert.match(text.action, /[а-яё]/, code)
-    assert.doesNotMatch(`${text.what} ${text.action}`, /english|\{again\}|Продолжить/, code)
+    doesNotMatch(`${text.what} ${text.action}`, /english|\{again\}|Продолжить/, code)
   }
   // Orca names no action: a code of its the panel does not know keeps its words. A known one, a
   // line of an error stream and a refusal without a word do not.
@@ -1239,10 +1241,10 @@ test('a project list orca cannot give is retried from the panel', async () => {
   })
   view = await mount(panel, { host })
   assert.match(textOf(view), /Orca не ответила/)
-  assert.doesNotMatch(textOf(view), /Orca is not running/)
+  doesNotMatch(textOf(view), /Orca is not running/)
   await view.press({ text: 'Повторить' })
   assert.equal(calls.filter((c) => c.name === 'epics.list').length, 1)
-  assert.doesNotMatch(textOf(view), /Orca не ответила/)
+  doesNotMatch(textOf(view), /Orca не ответила/)
 })
 
 test('an empty project says so', async () => {
@@ -1283,7 +1285,7 @@ test('the prepare tab offers a spec or a plan by what the epic lacks, in russian
   assert.equal(view.find({ testId: 'prepare:20' }), null)
   assert.equal(view.find({ testId: 'epic:20' })?.props.disabled, true)
   // The English reason of the CLI never reaches the panel.
-  assert.doesNotMatch(textOf(view), /no spec|no plan|cannot be read/)
+  doesNotMatch(textOf(view), /no spec|no plan|cannot be read/)
 })
 
 test('an epic without a spec is prepared by the agent chosen in the sheet', async () => {
@@ -1414,7 +1416,7 @@ test('a prepare answer for a project left is not drawn in the chosen one', async
   pending[0]?.()
   await Promise.all([preparing, toBilling])
   assert.equal(pickerOf(view)?.props.title, 'Billing')
-  assert.doesNotMatch(textOf(view), /conport prepare 10/)
+  doesNotMatch(textOf(view), /conport prepare 10/)
 })
 
 test('an agent picked by hand in the sheet stays when the panel comes back into view', async () => {
@@ -1590,7 +1592,7 @@ const SOURCES = join(dirname(fileURLToPath(import.meta.url)))
 test('no panel text says прогон', async () => {
   // Nothing the panel or the worker can show says it: the sources hold no such word.
   for (const file of ['panel.tsx', 'text.ts', 'worker.ts', 'cli.ts']) {
-    assert.doesNotMatch(readFileSync(join(SOURCES, file), 'utf8'), /прогон/i, file)
+    doesNotMatch(readFileSync(join(SOURCES, file), 'utf8'), /прогон/i, file)
   }
   // Nor does any screen drawn: each tab, the epic in each state of its session, the sheet.
   const screens: string[] = []
@@ -1617,5 +1619,5 @@ test('no panel text says прогон', async () => {
     await view.unmount()
     view = undefined
   }
-  for (const screen of screens) assert.doesNotMatch(screen, /прогон/i)
+  for (const screen of screens) doesNotMatch(screen, /прогон/i)
 })
