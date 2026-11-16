@@ -11,7 +11,6 @@ import {
   session,
   SESSION_ALIVE,
   SESSION_COPY,
-  SESSION_WORKFLOW,
   SUBAGENTS,
   TASK_LIST,
   untyped
@@ -71,9 +70,6 @@ export default defineCheck({
   'epic-new': scenario(EPIC_LIST, { epic: 15 }),
   'epic-copy-no-session': scenario(EPIC_LIST, { epic: 7, state: SESSION_COPY }),
   'epic-session-alive': scenario(EPIC_LIST, { epic: 7, state: SESSION_ALIVE }),
-  'epic-workflow': scenario(EPIC_LIST, { epic: 7, state: SESSION_WORKFLOW }),
-  // The workflow is Claude Code's alone: the start is off and says what to choose.
-  'epic-workflow-not-claude': scenario(EPIC_LIST, { epic: 7, state: session({ way: 'workflow', harness: 'codex' }) }),
   'epic-roles-unavailable': scenario(EPIC_LIST, { epic: 15, noSubagents: true }),
   // A harness whose subagents have no types: the roles go by the texts of the CLI.
   'epic-codex': scenario(EPIC_LIST, { epic: 15, state: session({ harness: 'codex' }) }),

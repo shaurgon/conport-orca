@@ -123,9 +123,6 @@ export interface Roles {
   finalReviewer: string
 }
 
-/** How an epic is done: by the SDD skill in a working copy of its own, or by the workflow `/conport:epic`. */
-export type Way = 'sdd' | 'workflow'
-
 /** Names the epic a request is about. */
 export interface EpicRef {
   /**
@@ -140,10 +137,10 @@ export interface EpicRef {
 
 /**
  * What is chosen for an epic and whether its session is alive. The choice is what the last start
- * of the epic remembered; an epic never started answers the defaults.
+ * of the epic remembered; an epic never started answers the defaults. An epic is done one way
+ * only: by the SDD skill in the working copy of its branch `epic-<N>`.
  */
 export interface EpicSession {
-  way: Way
   harness: string
   roles: Roles
   /** The path of the working copy on the branch `epic-<N>`; null when there is none. */
@@ -151,8 +148,6 @@ export interface EpicSession {
   alive: boolean
   /** The terminal of the live session, as orca lists it; null when no session is alive. */
   terminal: string | null
-  /** Branches `epic<N>/…` of an earlier run of the workflow are there. */
-  workflowBranches: boolean
 }
 
 export type EpicTaskStatus = 'TODO' | 'IN_PROGRESS' | 'REVIEW' | 'BLOCKED' | 'PARKED' | 'DONE' | 'CANCELLED'
@@ -206,19 +201,18 @@ declare module 'orca' {
      */
     'epic.prepare': { input: EpicRef & { agent: string }; output: Result<{ terminal: string }> }
     /**
-     * Starts an epic with the harness chosen for it. By the SDD skill: finds or creates the
-     * working copy of the branch `epic-<N>` and opens the harness there with the task of the
-     * epic. By the workflow: opens the harness in the repository root, and `worktree` is null.
-     * The harness, the roles and the way are remembered for the epic, with the terminal opened.
+     * Starts an epic by the SDD skill with the harness chosen for it: finds or creates the working
+     * copy of the branch `epic-<N>` and opens the harness there with the task of the epic. The
+     * harness and the roles are remembered for the epic, with the terminal opened.
      */
     'epic.start': {
-      input: EpicRef & { way: Way; harness: string; roles: Roles }
-      output: Result<{ terminal: string; way: Way; worktree: string | null }>
+      input: EpicRef & { harness: string; roles: Roles }
+      output: Result<{ terminal: string; worktree: string }>
     }
     /**
-     * The way, the harness and the roles of an epic, and whether its session is alive: orca is
-     * asked for its working copies and terminals, ConPort is not asked. `project` is the handle
-     * the epic list answered with; a name is refused, since a start remembers by the handle.
+     * The harness and the roles of an epic, and whether its session is alive: orca is asked for
+     * its working copies and terminals, ConPort and git are not asked. `project` is the handle the
+     * epic list answered with; a name is refused, since a start remembers by the handle.
      */
     'epic.session': { input: EpicRef; output: Result<EpicSession> }
     /** Every task of an epic in ConPort, by its number, the cancelled ones last. */

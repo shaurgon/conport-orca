@@ -28,8 +28,7 @@ import type {
   Result,
   Roles,
   SubagentList,
-  TaskList,
-  Way
+  TaskList
 } from './protocol'
 import { readSettings, type SettingsText } from './settings'
 import { AGENT_MISSING_ACTION, HARNESS_MISSING_ACTION, type PromptSubject, promptRefusal, REFUSED } from './text'
@@ -358,14 +357,10 @@ export function createWorker(deps: WorkerDeps): {
       return ok(handle)
     }
 
-    /**
-     * What is left of an epic started before, read in one call of git: the branch `epic-<N>` of
-     * the SDD skill, and the branches `epic<N>/…` the workflow cuts for its tasks.
-     */
-    const epicBranches = async (root: string, epic: number): Promise<Result<{ sdd: boolean; workflow: boolean }>> => {
+    /** Whether the branch `epic-<N>` of an epic started before is there, read in one call of git. */
+    const epicBranch = async (root: string, epic: number): Promise<Result<boolean>> => {
       const own = `refs/heads/epic-${epic}`
-      const tasks = `refs/heads/epic${epic}/`
-      const listed = await runProcess([...deps.git, '-C', root, 'for-each-ref', '--format=%(refname)', own, `${tasks}*`])
+      const listed = await runProcess([...deps.git, '-C', root, 'for-each-ref', '--format=%(refname)', own])
       // A git that could not start is told as any program that could not.
       if (listed.failure !== undefined) return interpret('git', listed, basename(deps.git[0] ?? '')) as Result<never>
       if (listed.code !== 0) {
@@ -375,7 +370,7 @@ export function createWorker(deps: WorkerDeps): {
       }
       const refs = listed.stdout.split('\n').map((line) => line.trim())
       // The pattern of the branch itself lists the branches under it too: only the exact name counts.
-      return ok({ sdd: refs.includes(own), workflow: refs.some((ref) => ref.startsWith(tasks)) })
+      return ok(refs.includes(own))
     }
 
     /**
@@ -553,86 +548,72 @@ export function createWorker(deps: WorkerDeps): {
     })
 
     // An epic that has its spec and its plan: its harness gets the task of the epic in a terminal
-    // and does the rest. The start reads the epic and the agent kinds, then asks `conport prompt`
-    // for the task, and runs nothing else of ConPort: no check, no lock, no record of a run, no
-    // file in the working copy.
-    orca.panels.handle('epic.start', async ({ project, root, epic, way, harness, roles }) => {
+    // of the working copy of the branch `epic-<N>` and does the rest by the SDD skill. The start
+    // reads the epic and the agent kinds, then asks `conport prompt` for the task, and runs nothing
+    // else of ConPort: no check, no lock, no record of a run, no file in the working copy.
+    orca.panels.handle('epic.start', async ({ project, root, epic, harness, roles }) => {
       const list = await conport<EpicList>(['epic', 'list', '--project', project, '--json'], root)
       if (!list.ok) return list
       const found = list.data.epics.find((e) => e.id === epic)
       if (!found) return refuse('epic_not_found', REFUSED.epicNotFound(epic))
       if (!found.runnable) return refuse('epic_not_ready', REFUSED.epicNotReady(epic))
-      if (way === 'workflow' && harness !== 'claude') return refuse('way_needs_claude', REFUSED.wayNeedsClaude)
       const roleInvalid = refuse('role_invalid', REFUSED.roleInvalid)
-      // A request that names no roles has nothing to remember for the epic, whichever the way.
+      // A request that names no roles has nothing to remember for the epic, whichever the harness.
       if (typeof roles !== 'object' || roles === null) return roleInvalid
-      // Only Claude Code by the SDD skill is told the types: there they reach the task and the command line.
+      // Only Claude Code is told the types: there they reach the task and the command line.
       const types: unknown[] = [roles.implementer, roles.reviewer, roles.gapHunter, roles.finalReviewer]
-      if (way === 'sdd' && harness === 'claude' && !types.every((type) => typeof type === 'string' && ROLE_TYPE_FORM.test(type))) {
+      if (harness === 'claude' && !types.every((type) => typeof type === 'string' && ROLE_TYPE_FORM.test(type))) {
         return roleInvalid
       }
       const command = await agentCommand(root, harness, 'harness')
       if (!command.ok) return command
 
-      // An epic begun one way is not taken over by the other: their branches do not meet.
-      const branches = await epicBranches(root, epic)
-      if (!branches.ok) return branches
-      if (way === 'sdd' && branches.data.workflow) {
-        return fail('epic_started_workflow', `The SDD skill is chosen, but branches epic${epic}/… are there already: the epic was started by the workflow`, 'Choose the /conport:epic mode.')
-      }
-      if (way === 'workflow' && branches.data.sdd) {
-        return fail('epic_started_sdd', `The workflow is chosen, but the branch epic-${epic} is there already: the epic was started by the SDD skill`, 'Choose the SDD skill mode.')
-      }
-
+      const branchThere = await epicBranch(root, epic)
+      if (!branchThere.ok) return branchThere
       const trees = await worktreesOf(root)
       if (!trees.ok) return trees
       const handle = list.data.project
-      let worktree: string | null = null
-      if (way === 'sdd') {
-        const branch = `epic-${epic}`
-        // A copy that is there is taken as it is: nothing in it is read.
-        worktree = trees.data.rows.find((row) => row.branch === branch)?.path ?? null
-        if (worktree === null) {
-          // The copy may be among the rows cut off: none is created on a part of the list.
-          if (!trees.data.complete) return COPIES_TRUNCATED()
-          if (branches.data.sdd) {
-            return fail('epic_branch_taken', `The branch ${branch} is there, but it has no working copy`, 'Open the branch as a workspace in Orca.')
-          }
-          // No `--setup`: the setting of the repository in Orca decides.
-          const created = await orcaCli<{ worktree?: { path?: string } }>([
-            'worktree', 'create', '--repo', `id:${trees.data.repoId}`, '--name', branch, '--branch', branch,
-            '--base-branch', trees.data.base, '--no-parent'
-          ])
-          if (!created.ok) return created
-          worktree = created.data.worktree?.path ?? null
-          if (worktree === null) return fail('bad_output', 'orca created a working copy and did not name its path', 'Update Orca.')
+      const branch = `epic-${epic}`
+      // A copy that is there is taken as it is: nothing in it is read.
+      let worktree = trees.data.rows.find((row) => row.branch === branch)?.path ?? null
+      if (worktree === null) {
+        // The copy may be among the rows cut off: none is created on a part of the list.
+        if (!trees.data.complete) return COPIES_TRUNCATED()
+        if (branchThere.data) {
+          return fail('epic_branch_taken', `The branch ${branch} is there, but it has no working copy`, 'Open the branch as a workspace in Orca.')
         }
+        // No `--setup`: the setting of the repository in Orca decides.
+        const created = await orcaCli<{ worktree?: { path?: string } }>([
+          'worktree', 'create', '--repo', `id:${trees.data.repoId}`, '--name', branch, '--branch', branch,
+          '--base-branch', trees.data.base, '--no-parent'
+        ])
+        if (!created.ok) return created
+        worktree = created.data.worktree?.path ?? null
+        if (worktree === null) return fail('bad_output', 'orca created a working copy and did not name its path', 'Update Orca.')
       }
       // The CLI checks the epic again, now that the place of the work is known.
-      const args =
-        worktree === null
-          ? epicPromptArgs({ epic, project: handle, harness, root, base: trees.data.base, way: 'workflow' })
-          : epicPromptArgs({ epic, project: handle, harness, worktree, base: trees.data.base, roles })
+      const args = epicPromptArgs({ epic, project: handle, harness, worktree, base: trees.data.base, roles })
       const task = await promptText(args, root, { command: 'epic', epic, harness })
       if (!task.ok) return task
-      const title = `conport epic ${epic} · ${way === 'sdd' ? 'SDD' : 'workflow'}`
-      const terminal = await terminalIn(worktree ?? root, title, commandLine([command.data, task.data]))
+      const terminal = await terminalIn(worktree, `conport epic ${epic} · SDD`, commandLine([command.data, task.data]))
       if (!terminal.ok) return terminal
       // The person talks with the harness there: the terminal comes to the front.
       await bringForward(terminal.data)
       await orca.storage.set(`harness:${handle}:${epic}`, harness)
       await orca.storage.set(`roles:${handle}:${epic}`, { ...roles })
-      await orca.storage.set(`way:${handle}:${epic}`, way)
-      await orca.storage.set(`session:${handle}:${epic}`, { terminal: terminal.data, way })
+      await orca.storage.set(`session:${handle}:${epic}`, { terminal: terminal.data })
       await orca.storage.set(`harness:${handle}`, harness)
-      return ok({ terminal: terminal.data, way, worktree })
+      return ok({ terminal: terminal.data, worktree })
     })
 
-    /** What a start of the epic remembered, or the default where it remembered nothing. */
-    const chosenFor = async (project: string, epic: number): Promise<{ way: Way; harness: string; roles: Roles; terminal: string | null }> => {
+    /**
+     * What a start of the epic remembered, or the default where it remembered nothing. Of the
+     * session record only its terminal is read: a record a start by an earlier release of the
+     * panel left holds a `way` besides, and the key `way:<project>:<epic>` it wrote is not read.
+     */
+    const chosenFor = async (project: string, epic: number): Promise<{ harness: string; roles: Roles; terminal: string | null }> => {
       const name = (value: unknown): string | null => (typeof value === 'string' && value !== '' ? value : null)
-      const [way, harness, lastHarness, roles, session] = await Promise.all([
-        orca.storage.get(`way:${project}:${epic}`),
+      const [harness, lastHarness, roles, session] = await Promise.all([
         orca.storage.get(`harness:${project}:${epic}`),
         orca.storage.get(`harness:${project}`),
         orca.storage.get(`roles:${project}:${epic}`),
@@ -647,7 +628,6 @@ export function createWorker(deps: WorkerDeps): {
       }
       const whole = Object.values(stored).every((type) => type !== null)
       return {
-        way: way === 'workflow' ? 'workflow' : 'sdd',
         // A new epic takes the harness of the last start in the project.
         harness: name(harness) ?? name(lastHarness) ?? 'claude',
         roles: whole ? (stored as Roles) : DEFAULT_ROLES,
@@ -699,7 +679,7 @@ export function createWorker(deps: WorkerDeps): {
     const liveSession = async (
       root: string,
       epic: number,
-      chosen: { way: Way; terminal: string | null }
+      chosen: { terminal: string | null }
     ): Promise<Result<{ worktree: string | null; terminal: string | null }>> => {
       const copies = await copiesOf(root)
       if (!copies.ok) return copies
@@ -707,37 +687,32 @@ export function createWorker(deps: WorkerDeps): {
       // The copy may be among the rows cut off.
       if (worktree === null && !copies.data.complete) return COPIES_TRUNCATED()
 
-      // By the SDD skill the session works in the copy of the epic, and after a restart of Orca
-      // any agent there is it; by the workflow it works in the root, where other agents work too,
-      // so only the remembered terminal is it.
-      const bySdd = chosen.way === 'sdd'
-      const place = bySdd ? worktree : chosen.terminal === null ? null : root
+      // The session works in the copy of the epic, and after a restart of Orca any agent there is
+      // it. Without the copy, only the remembered terminal in the root can be one: a start by an
+      // earlier release of the panel could open its session there, among other agents.
+      const place = worktree ?? (chosen.terminal === null ? null : root)
       let terminal: string | null = null
       if (place !== null) {
-        const live = await liveTerminal(place, chosen.terminal, bySdd)
+        const live = await liveTerminal(place, chosen.terminal, worktree !== null)
         if (!live.ok) return live
         terminal = live.data
       }
       return ok({ worktree, terminal })
     }
 
-    // What is chosen for an epic and whether its session is alive. Orca is asked, ConPort is not.
+    // What is chosen for an epic and whether its session is alive. Orca is asked, ConPort and git are not.
     orca.panels.handle('epic.session', async ({ project, root, epic }) => {
       const handle = byHandle(project)
       if (!handle.ok) return handle
       const chosen = await chosenFor(handle.data, epic)
-      const branches = await epicBranches(root, epic)
-      if (!branches.ok) return branches
       const live = await liveSession(root, epic, chosen)
       if (!live.ok) return live
       const session: EpicSession = {
-        way: chosen.way,
         harness: chosen.harness,
         roles: chosen.roles,
         worktree: live.data.worktree,
         alive: live.data.terminal !== null,
-        terminal: live.data.terminal,
-        workflowBranches: branches.data.workflow
+        terminal: live.data.terminal
       }
       return ok(session)
     })

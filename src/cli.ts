@@ -2,7 +2,7 @@
 import type { HandMode, OutsideTask, Refusal, Result, Roles } from './protocol'
 
 /** The conport CLI release the panel runs: kept equal to the CLI of the same repository. */
-export const CLI_VERSION = '0.12.0'
+export const CLI_VERSION = '0.13.0'
 
 /** How the CLI is started, as the person would type it. */
 export const CONPORT = ['npx', '-y', `conport@${CLI_VERSION}`]
@@ -40,7 +40,7 @@ export function missingDocument(reason: string | null): 'spec' | 'plan' | null {
  */
 export const PREPARE_AGENTS: readonly string[] = ['claude', 'codex', 'cursor']
 
-/** An epic done by the SDD skill: in the working copy of the branch `epic-<N>`, by these subagent types. */
+/** An epic, done by the SDD skill: in the working copy of the branch `epic-<N>`, by these subagent types. */
 export interface EpicSddPrompt {
   epic: number
   /** The project, as the CLI takes any address of one. */
@@ -52,29 +52,17 @@ export interface EpicSddPrompt {
   roles: Roles
 }
 
-/** An epic done by the workflow `/conport:epic`: in the repository root, on its default branch. */
-export interface EpicWorkflowPrompt {
-  epic: number
-  project: string
-  harness: string
-  root: string
-  base: string
-  way: 'workflow'
-}
-
 /**
  * The arguments of `conport prompt epic` after the CLI itself: the task the lead session of an
- * epic is started with. Only Claude Code by the SDD skill is told the subagent types: another
- * harness works by the role texts of the CLI, and the workflow has its own.
+ * epic is started with. Only Claude Code is told the subagent types: another harness works by the
+ * role texts of the CLI.
  */
-export function epicPromptArgs(i: EpicSddPrompt | EpicWorkflowPrompt): string[] {
-  const head = ['prompt', 'epic', String(i.epic), '-p', i.project]
-  if ('way' in i) return [...head, '--way', 'workflow', '--harness', i.harness, '--root', i.root, '--base', i.base, '--json']
+export function epicPromptArgs(i: EpicSddPrompt): string[] {
   const types =
     i.harness === 'claude'
       ? ['--implementer', i.roles.implementer, '--reviewer', i.roles.reviewer, '--gap-hunter', i.roles.gapHunter, '--final-reviewer', i.roles.finalReviewer]
       : []
-  return [...head, '--way', 'sdd', '--harness', i.harness, '--worktree', i.worktree, '--base', i.base, ...types, '--json']
+  return ['prompt', 'epic', String(i.epic), '-p', i.project, '--harness', i.harness, '--worktree', i.worktree, '--base', i.base, ...types, '--json']
 }
 
 /** The arguments of `conport prompt prepare`: the task of an agent that prepares an epic, for this panel. */

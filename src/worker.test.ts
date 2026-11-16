@@ -33,7 +33,7 @@ import {
   worktreeRow
 } from '../test/fake'
 import { DEFAULT_ROLES, HANDLE_FORM, epicPromptArgs, preparePromptArgs, taskPromptArgs } from './cli'
-import type { AgentKind, EpicSession, EpicTask, HandMode, Result, Roles, Way } from './protocol'
+import type { AgentKind, EpicSession, EpicTask, HandMode, Result, Roles } from './protocol'
 import { HARNESS_MISSING_ACTION, refusalText } from './text'
 
 const SWITCHED = { match: 'terminal switch --terminal term-1 ', stdout: json({ ok: true, result: {} }) }
@@ -100,7 +100,7 @@ test('the worker polls nothing and shows no status bar item', async () => {
     ],
     ({ root }) => [{ match: `-C ${root} for-each-ref `, stdout: 'refs/heads/epic-7\n' }]
   )
-  const host = f.host({ 'agents.list': { agents: [] } }, { [`session:${HANDLE}:7`]: { terminal: 'term-epic', way: 'sdd' } })
+  const host = f.host({ 'agents.list': { agents: [] } }, { [`session:${HANDLE}:7`]: { terminal: 'term-epic' } })
   const timers = pendingTimers()
   try {
     const worker = await mountWorker(f.worker, { host })
@@ -112,7 +112,7 @@ test('the worker polls nothing and shows no status bar item', async () => {
       await worker.request('epic.tasks', epic),
       await worker.request('subagents.get', { root: f.root, harness: 'claude' }),
       await worker.request('terminal.show', epic),
-      await worker.request('epic.start', { ...epic, way: 'sdd', harness: 'claude', roles: DEFAULT_ROLES })
+      await worker.request('epic.start', { ...epic, harness: 'claude', roles: DEFAULT_ROLES })
     ]
     // Every request did its work: a refusal would leave nothing to schedule and prove nothing.
     assert.deepEqual(answers.map((answer) => answer.ok), [true, true, true, true, true, true, true], JSON.stringify(answers))
@@ -1185,7 +1185,6 @@ interface StartCase {
   epic?: number
   /** The project as the panel names it: a handle or a name. */
   project?: string
-  way?: Way
   harness?: string
   roles?: Roles
   agents?: { agents: AgentKind[] }
@@ -1248,7 +1247,6 @@ async function startOn({ f, host, worker }: Machine, options: StartCase = {}) {
     project: options.project ?? HANDLE,
     root: f.root,
     epic,
-    way: options.way ?? 'sdd',
     harness: options.harness ?? 'claude',
     roles: options.roles ?? TYPES
   })
@@ -1304,7 +1302,7 @@ const CREATE_COPY = (base: string): string[] => [
 test('epic.start creates the working copy when there is none', async () => {
   const { f, answer, copy, created, worker } = await start({ base: 'develop' })
   // The path of the copy is the one orca answered with.
-  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, way: 'sdd', worktree: copy } })
+  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, worktree: copy } })
   // The repository by the id orca gives it, the branch cut from the one the main working tree is
   // on, no parent; the setup of the repository is left to its setting in Orca.
   assert.deepEqual(created, [CREATE_COPY('develop')])
@@ -1321,7 +1319,7 @@ test('epic.start takes the working copy that is there and creates none', async (
     rows: (dir) => [worktreeRow(join(dir, 'elsewhere', 'epic-70'), 'epic-70'), worktreeRow(there(dir), 'epic-7')]
   })
   const path = there(dirname(f.root))
-  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, way: 'sdd', worktree: path } })
+  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, worktree: path } })
   assert.deepEqual(created, [])
   assert.equal(opened[0]?.[3], `path:${path}`)
 })
@@ -1335,7 +1333,7 @@ test('epic.start takes the working copy of the epic made outside Orca, outside t
     orca: ({ root }) => [{ match: `worktree list --repo path:${root} `, stdout: json(herdrWorktreeList(root)) }]
   })
   // Taken as it is: no refusal that the branch has no copy, and no copy created beside it.
-  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, way: 'sdd', worktree: HERDR_COPY } })
+  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, worktree: HERDR_COPY } })
   assert.deepEqual(created, [])
   assert.deepEqual(opened, [
     ['terminal', 'create', '--worktree', `path:${HERDR_COPY}`, '--title', 'conport epic 12 · SDD', '--command', command, '--json']
@@ -1350,7 +1348,7 @@ test('epic.start takes the working copy of the epic made outside Orca, outside t
 test('epic.start takes the main working tree when it is on the branch of the epic', async () => {
   // The repository itself stands on `epic-7`: it is the copy of the epic, and no other is made.
   const { f, answer, created, opened } = await start({ base: 'epic-7', refs: ['refs/heads/epic-7'] })
-  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, way: 'sdd', worktree: f.root } })
+  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, worktree: f.root } })
   assert.deepEqual(created, [])
   assert.equal(opened[0]?.[3], `path:${f.root}`)
 })
@@ -1403,14 +1401,14 @@ test('a base branch the shell would read reaches the harness inside the one argu
   assert.ok(task.includes(base))
 })
 
-test('epic.start remembers the harness, the roles and the way for the epic, the harness for the project and the terminal', async () => {
+test('epic.start remembers the harness and the roles for the epic, the harness for the project and the terminal', async () => {
   // Named by its name, the project is remembered by the handle the CLI answered with.
   const { storage } = await start({ harness: 'codex', project: 'shop-api' })
+  // No way is written: the record of the session holds its terminal alone.
   assert.deepEqual(storage, {
     [`harness:${HANDLE}:7`]: 'codex',
     [`roles:${HANDLE}:7`]: TYPES,
-    [`way:${HANDLE}:7`]: 'sdd',
-    [`session:${HANDLE}:7`]: { terminal: EPIC_TERMINAL, way: 'sdd' },
+    [`session:${HANDLE}:7`]: { terminal: EPIC_TERMINAL },
     [`harness:${HANDLE}`]: 'codex'
   })
 })
@@ -1455,7 +1453,7 @@ test('epic.start runs no epic run and no check', async () => {
     EPIC_AGENTS_CALL,
     epicPromptArgs({ epic: 7, project: HANDLE, harness: 'claude', worktree: copy, base: 'main', roles: TYPES })
   ])
-  assert.deepEqual(f.gitCalls(), [['-C', f.root, 'for-each-ref', '--format=%(refname)', 'refs/heads/epic-7', 'refs/heads/epic7/*']])
+  assert.deepEqual(f.gitCalls(), [['-C', f.root, 'for-each-ref', '--format=%(refname)', 'refs/heads/epic-7']])
   assert.deepEqual(f.orcaCalls(), [
     ['worktree', 'list', '--repo', `path:${f.root}`, '--limit', '10000', '--json'],
     CREATE_COPY('main'),
@@ -1468,29 +1466,19 @@ test('epic.start runs no epic run and no check', async () => {
   assert.deepEqual(worker.posts, [])
 })
 
-test('epic.start by the workflow creates no working copy and opens its terminal in the root', async () => {
-  const { f, host, answer, created, opened, command, switched, storage } = await start({ way: 'workflow' })
-  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, way: 'workflow', worktree: null } })
-  assert.deepEqual(created, [])
+test('epic.start without a way starts by the SDD skill', async () => {
+  // The request names no way: the epic is done in its working copy, in a terminal of the SDD skill.
+  const { f, answer, copy, created, opened, command, storage } = await start()
+  assert.deepEqual(answer, { ok: true, data: { terminal: EPIC_TERMINAL, worktree: copy } })
+  assert.deepEqual(created, [CREATE_COPY('main')])
   assert.deepEqual(opened, [
-    ['terminal', 'create', '--worktree', `path:${f.root}`, '--title', 'conport epic 7 · workflow', '--command', command, '--json']
+    ['terminal', 'create', '--worktree', `path:${copy}`, '--title', 'conport epic 7 · SDD', '--command', command, '--json']
   ])
-  assert.deepEqual(host.callsOf('terminal.create'), [])
-  assert.deepEqual(switched, [['terminal', 'switch', '--terminal', EPIC_TERMINAL, '--json']])
-  assert.deepEqual(storage[`session:${HANDLE}:7`], { terminal: EPIC_TERMINAL, way: 'workflow' })
-  assert.equal(storage[`way:${HANDLE}:7`], 'workflow')
-})
-
-test('epic.start by the workflow puts no role type into the task', async () => {
-  // Types the SDD way would refuse are of no matter to the workflow: it never reads them.
-  const roles = { implementer: 'my implementer', reviewer: "o'neil", gapHunter: 'gap\nhunter', finalReviewer: 'final-type' }
-  const { f, answer, args, task } = await start({ way: 'workflow', roles, base: 'trunk' })
-  assert.equal(answer.ok, true)
-  assert.equal(args.length, 1)
-  const asked = epicPromptArgs({ epic: 7, project: HANDLE, harness: 'claude', root: f.root, base: 'trunk', way: 'workflow' })
-  assert.deepEqual(f.conportCalls().at(-1), asked)
-  assert.equal(task, promptText(asked))
-  for (const type of [...Object.values(roles), ...Object.values(TYPES)]) assert.equal(asked.includes(type), false, type)
+  // The CLI is told no way either, and no way is remembered.
+  const asked = f.conportCalls().at(-1) ?? []
+  assert.deepEqual(asked, epicPromptArgs({ epic: 7, project: HANDLE, harness: 'claude', worktree: copy, base: 'main', roles: TYPES }))
+  assert.equal(asked.includes('--way'), false)
+  assert.deepEqual(Object.keys(storage).filter((key) => key.startsWith('way:')), [])
 })
 
 test('epic.start refuses an epic that is gone', async () => {
@@ -1505,17 +1493,8 @@ test('epic.start refuses an epic that is gone', async () => {
 test('epic.start refuses an epic without a spec or a plan', async () => {
   for (const epic of [9, 10]) {
     // Whatever else is wrong with the request, the epic is named first.
-    const started = await start({ epic, way: 'workflow', harness: 'gemini' })
+    const started = await start({ epic, harness: 'gemini' })
     assertRefused(started, 'epic_not_ready', `Epic ${epic} has no spec or no plan`, 'Prepare the epic in the Prepare tab.')
-    assert.deepEqual(started.f.conportCalls(), [EPIC_LIST_CALL])
-  }
-})
-
-test('epic.start refuses the workflow for a harness other than claude', async () => {
-  for (const harness of ['codex', 'gemini']) {
-    const started = await start({ way: 'workflow', harness })
-    assertRefused(started, 'way_needs_claude', 'The /conport:epic mode is only in Claude Code with the conport plugin', 'Choose the Claude Code harness.')
-    // Before the harness is looked for.
     assert.deepEqual(started.f.conportCalls(), [EPIC_LIST_CALL])
   }
 })
@@ -1538,19 +1517,19 @@ test('epic.start refuses a role type that is not a plain name', async () => {
     // Before the harness is looked for.
     assert.deepEqual(started.f.conportCalls(), [EPIC_LIST_CALL])
   }
-  // A request that names no roles at all is refused the same, whichever the way and the harness.
-  for (const [way, harness] of [['sdd', 'claude'], ['sdd', 'codex'], ['workflow', 'claude']] as const) {
+  // A request that names no roles at all is refused the same, whichever the harness.
+  for (const harness of ['claude', 'codex']) {
     const machine = await startMachine()
-    const request = { project: HANDLE, root: machine.f.root, epic: 7, way, harness }
+    const request = { project: HANDLE, root: machine.f.root, epic: 7, harness }
     const answer = await machine.worker.request('epic.start', request as typeof request & { roles: Roles })
     await machine.worker.deactivate()
     const error = { code: 'role_invalid', message: 'The subagent type is not a plain name', action: 'Choose a type for the role from the list.' }
-    assert.deepEqual(answer, { ok: false, error }, `${way} ${harness}`)
+    assert.deepEqual(answer, { ok: false, error }, harness)
     assert.deepEqual(machine.worker.refusals, [])
     assert.deepEqual(machine.f.orcaCalls(), [])
     assert.deepEqual(machine.host.data().storage, {})
   }
-  // Only Claude Code by the SDD skill is told the types: another harness never reads them.
+  // Only Claude Code is told the types: another harness never reads them.
   const codex = await start({ harness: 'codex', roles: { ...TYPES, reviewer: 'my reviewer' } })
   assert.equal(codex.answer.ok, true)
   assert.equal(codex.f.conportCalls().flat().includes('my reviewer'), false)
@@ -1576,31 +1555,27 @@ test('epic.start refuses a harness that is not found', async () => {
   assert.deepEqual(started.f.orcaCalls(), [])
 })
 
-test('epic.start refuses the workflow when the branch epic-N is there', async () => {
-  const started = await start({ way: 'workflow', refs: ['refs/heads/epic-7'] })
-  assertRefused(started, 'epic_started_sdd', 'The workflow is chosen, but the branch epic-7 is there already: the epic was started by the SDD skill', 'Choose the SDD skill mode.')
-  // Before the working copies are read.
-  assert.deepEqual(started.f.orcaCalls(), [])
-  // The branches of the workflow itself are what a second run of it picks up.
-  const again = await start({ way: 'workflow', refs: ['refs/heads/epic7/t12', 'refs/heads/epic7/t13'] })
-  assert.equal(again.answer.ok, true)
-})
-
-test('epic.start refuses SDD when branches epicN/… are there', async () => {
-  const started = await start({ refs: ['refs/heads/epic7/t12'] })
-  assertRefused(started, 'epic_started_workflow', 'The SDD skill is chosen, but branches epic7/… are there already: the epic was started by the workflow', 'Choose the /conport:epic mode.')
-  assert.deepEqual(started.f.orcaCalls(), [])
-  // A branch under `epic-7/` is no branch of the workflow, and no branch of the epic either.
+test('branches epicN/… do not hold the start, and git is asked only for epic-N', async () => {
+  // Branches an earlier run of another process cut for its tasks: the SDD skill starts all the same.
+  const started = await start({ refs: ['refs/heads/epic7/t12', 'refs/heads/epic7/t13'] })
+  assert.deepEqual(started.answer, { ok: true, data: { terminal: EPIC_TERMINAL, worktree: started.copy } })
+  assert.equal(started.created.length, 1)
+  assert.deepEqual(started.f.gitCalls(), [['-C', started.f.root, 'for-each-ref', '--format=%(refname)', 'refs/heads/epic-7']])
+  // A branch under `epic-7/` is no branch of the epic either.
   const other = await start({ refs: ['refs/heads/epic-7/notes'] })
   assert.equal(other.answer.ok, true)
   assert.equal(other.created.length, 1)
+  // Beside the branch of the epic and its copy, they change nothing: the copy is taken as it is.
+  const both = await start({
+    refs: ['refs/heads/epic-7', 'refs/heads/epic7/t12'],
+    rows: (dir) => [worktreeRow(join(dir, 'elsewhere', 'epic-7'), 'epic-7')]
+  })
+  assert.equal(both.answer.ok && both.answer.data.worktree, join(dirname(both.f.root), 'elsewhere', 'epic-7'))
+  assert.deepEqual(both.created, [])
 })
 
 test('epic.start refuses when the main working tree is on no branch', async () => {
-  for (const way of ['sdd', 'workflow'] as const) {
-    const started = await start({ way, base: null })
-    assertRefused(started, 'root_detached', "The repository's main working copy is not on a branch, so the epic has no base", 'Check out a branch in the main working copy.')
-  }
+  assertRefused(await start({ base: null }), 'root_detached', "The repository's main working copy is not on a branch, so the epic has no base", 'Check out a branch in the main working copy.')
   // However orca says "no branch": an empty name, or no name at all.
   const unnamed: Array<(row: WorktreeRow) => Partial<WorktreeRow>> = [(row) => ({ ...row, branch: '' }), ({ branch: _gone, ...row }) => row]
   for (const main of unnamed) {
@@ -1629,41 +1604,34 @@ test('epic.start refuses a truncated worktree list', async () => {
   const there = await start({ truncated: true, refs: ['refs/heads/epic-7'], rows: (dir) => [worktreeRow(join(dir, 'elsewhere', 'epic-7'), 'epic-7')] })
   assert.equal(there.answer.ok, true)
   assert.deepEqual(there.created, [])
-  // The main working tree itself is among the rows cut off: the base is not known, whichever the way.
+  // The main working tree itself is among the rows cut off: the base is not known.
   const elsewhere = (dir: string): Partial<WorktreeRow> => ({ path: join(dir, 'elsewhere', 'main'), isMainWorktree: false })
-  for (const way of ['sdd', 'workflow'] as const) {
-    assertRefused(await start({ way, truncated: true, main: (row) => ({ ...row, ...elsewhere(dirname(row.path)) }) }), 'workspaces_truncated', message, action)
-  }
+  assertRefused(await start({ truncated: true, main: (row) => ({ ...row, ...elsewhere(dirname(row.path)) }) }), 'workspaces_truncated', message, action)
 })
 
 test('epic.start refuses an answer of orca that lacks what it was asked for', async () => {
   const answered = (match: string, result: unknown): FakeAnswer => ({ match, stdout: json({ ok: true, result }) })
   // A whole list that names no main working tree of the repository.
-  for (const way of ['sdd', 'workflow'] as const) {
-    const unlisted = await start({ way, main: (row) => ({ ...row, isMainWorktree: false }) })
-    assertRefused(unlisted, 'bad_output', "orca did not name the repository's main working copy", 'Update Orca.')
-  }
+  const unlisted = await start({ main: (row) => ({ ...row, isMainWorktree: false }) })
+  assertRefused(unlisted, 'bad_output', "orca did not name the repository's main working copy", 'Update Orca.')
   // A working copy created without its path: no terminal is opened in a guessed folder.
   const pathless = await start({ orca: [answered('worktree create ', { worktree: {} })] })
   assert.deepEqual(pathless.answer, { ok: false, error: { code: 'bad_output', message: 'orca created a working copy and did not name its path', action: 'Update Orca.' } })
   assert.deepEqual(pathless.opened, [])
   assert.deepEqual(pathless.storage, {})
   // A terminal opened without its handle: there is no session to remember or to bring forward.
-  for (const way of ['sdd', 'workflow'] as const) {
-    const nameless = await start({ way, orca: [answered('terminal create ', { terminal: {} })] })
-    assert.deepEqual(nameless.answer, { ok: false, error: { code: 'bad_output', message: 'orca opened a terminal and did not name it', action: 'Update Orca.' } })
-    assert.deepEqual(nameless.switched, [])
-    assert.deepEqual(nameless.storage, {})
-  }
+  const nameless = await start({ orca: [answered('terminal create ', { terminal: {} })] })
+  assert.deepEqual(nameless.answer, { ok: false, error: { code: 'bad_output', message: 'orca opened a terminal and did not name it', action: 'Update Orca.' } })
+  assert.deepEqual(nameless.switched, [])
+  assert.deepEqual(nameless.storage, {})
 })
 
 test('a refusal of orca is returned as is', async () => {
   const refusal = { code: 'branch_in_use', message: 'the branch is checked out elsewhere', action: 'remove the other checkout' }
   const refused = (match: string): FakeAnswer => ({ match, code: 1, stdout: json({ ok: false, error: refusal }) })
-  const cases = [['worktree list', 'sdd'], ['worktree list', 'workflow'], ['worktree create', 'sdd'], ['terminal create', 'sdd'], ['terminal create', 'workflow']] as const
-  for (const [match, way] of cases) {
-    const { answer, storage, switched } = await start({ way, orca: [refused(match)] })
-    assert.deepEqual(answer, { ok: false, error: refusal }, `${match} ${way}`)
+  for (const match of ['worktree list', 'worktree create', 'terminal create']) {
+    const { answer, storage, switched } = await start({ orca: [refused(match)] })
+    assert.deepEqual(answer, { ok: false, error: refusal }, match)
     // A start that opened no terminal is not remembered.
     assert.deepEqual(storage, {})
     assert.deepEqual(switched, [])
@@ -1674,7 +1642,6 @@ test('epic.start tells each refusal of conport prompt in the words of the panel,
   const cases: Array<[string, string, string]> = [
     ['epic_not_found', 'Epic 7 is not in the project', 'Press Refresh.'],
     ['epic_not_ready', 'Epic 7 has no spec or no plan', 'Prepare the epic in the Prepare tab.'],
-    ['way_needs_claude', 'The /conport:epic mode is only in Claude Code with the conport plugin', 'Choose the Claude Code harness.'],
     ['role_invalid', 'The subagent type is not a plain name', 'Choose a type for the role from the list.'],
     ['agent_cannot_prepare', 'The harness “claude” does not take a task at start', 'Choose Claude Code, Codex or Cursor.']
   ]
@@ -1690,7 +1657,7 @@ test('epic.start tells each refusal of conport prompt in the words of the panel,
     assert.deepEqual(storage, {})
   }
   // Another refusal reaches the panel as the CLI gave it, and an answer without a text is bad output.
-  const noKey = await start({ way: 'workflow', conport: [{ match: 'prompt epic ', code: 2, stdout: json({ ok: false, error: NO_KEY }) }] })
+  const noKey = await start({ conport: [{ match: 'prompt epic ', code: 2, stdout: json({ ok: false, error: NO_KEY }) }] })
   assert.deepEqual(noKey.answer, { ok: false, error: NO_KEY })
   assert.deepEqual(noKey.opened, [])
   const textless = await start({ conport: [{ match: 'prompt epic ', stdout: json({ ok: true }) }] })
@@ -1706,7 +1673,7 @@ test('epic.start refuses when the branches cannot be listed', async () => {
   )
   const host = f.host({ 'agents.list': { agents: [] } })
   const worker = await mountWorker(f.worker, { host })
-  const answer = await worker.request('epic.start', { project: HANDLE, root: f.root, epic: 7, way: 'sdd', harness: 'claude', roles: TYPES })
+  const answer = await worker.request('epic.start', { project: HANDLE, root: f.root, epic: 7, harness: 'claude', roles: TYPES })
   await worker.deactivate()
   // What git said, as it said it, and the one thing to do; the panel shows both.
   const error = { code: 'git_failed', message: 'fatal: not a repository', action: 'Check the repository with git status in its root and try again.' }
@@ -1724,7 +1691,7 @@ test('a git that fails without a word is told by its exit code', async () => {
   )
   const host = f.host({ 'agents.list': { agents: [] } })
   const worker = await mountWorker(f.worker, { host })
-  const answer = await worker.request('epic.start', { project: HANDLE, root: f.root, epic: 7, way: 'sdd', harness: 'claude', roles: TYPES })
+  const answer = await worker.request('epic.start', { project: HANDLE, root: f.root, epic: 7, harness: 'claude', roles: TYPES })
   await worker.deactivate()
   const error = { code: 'git_failed', message: 'git: exit code 3', action: 'Check the repository with git status in its root and try again.' }
   assert.deepEqual(answer, { ok: false, error })
@@ -1737,7 +1704,7 @@ test('a git that cannot start is told with the one thing to do', async () => {
   const broken = createWorker({ conport: f.deps.conport, orca: f.deps.orca, git: ['/nonexistent/bin/git'] })
   const host = f.host({ 'agents.list': { agents: [] } })
   const worker = await mountWorker({ default: broken.activate, deactivate: broken.deactivate } as typeof f.worker, { host })
-  const answer = await worker.request('epic.start', { project: HANDLE, root: f.root, epic: 7, way: 'sdd', harness: 'claude', roles: TYPES })
+  const answer = await worker.request('epic.start', { project: HANDLE, root: f.root, epic: 7, harness: 'claude', roles: TYPES })
   await worker.deactivate()
   assert.equal(answer.ok === false && answer.error.code, 'spawn_failed')
   assert.match(answer.ok === false ? answer.error.action : '', /Make git visible on the Orca app's PATH/)
@@ -1748,7 +1715,7 @@ test('an epic terminal orca cannot bring forward is only logged, and the start i
   const refused = { ok: false, error: { code: 'terminal_not_found', message: 'no such terminal' } }
   const { answer, storage, worker } = await start({ orca: [{ match: 'terminal switch', code: 1, stdout: json(refused) }] })
   assert.equal(answer.ok, true)
-  assert.deepEqual(storage[`session:${HANDLE}:7`], { terminal: EPIC_TERMINAL, way: 'sdd' })
+  assert.deepEqual(storage[`session:${HANDLE}:7`], { terminal: EPIC_TERMINAL })
   assert.equal(worker.logs.some((line) => line.includes('terminal_not_found')), true, JSON.stringify(worker.logs))
 })
 
@@ -1785,22 +1752,21 @@ test('prepare and hand still remember the agent of the project', async () => {
   assert.equal(refusedHand.remembered, null)
 })
 
-test('the way of one epic does not change the way of another', async () => {
+test('the choice of one epic does not change the choice of another', async () => {
   const machine = await startMachine()
-  const first = await startOn(machine, { epic: 7, way: 'workflow', harness: 'claude' })
+  const first = await startOn(machine, { epic: 7, harness: 'claude' })
   assert.equal(first.answer.ok, true)
-  const second = await startOn(machine, { epic: 15, way: 'sdd', harness: 'codex', roles: { ...TYPES, reviewer: 'other-reviewer' } })
+  const second = await startOn(machine, { epic: 15, harness: 'codex', roles: { ...TYPES, reviewer: 'other-reviewer' } })
   assert.equal(second.answer.ok, true)
   await machine.worker.deactivate()
   const storage = second.storage
-  assert.equal(storage[`way:${HANDLE}:7`], 'workflow')
-  assert.equal(storage[`way:${HANDLE}:15`], 'sdd')
+  assert.deepEqual(Object.keys(storage).filter((key) => key.startsWith('way:')), [])
   assert.equal(storage[`harness:${HANDLE}:7`], 'claude')
   assert.equal(storage[`harness:${HANDLE}:15`], 'codex')
   assert.deepEqual(storage[`roles:${HANDLE}:7`], TYPES)
   assert.deepEqual(storage[`roles:${HANDLE}:15`], { ...TYPES, reviewer: 'other-reviewer' })
-  assert.deepEqual(storage[`session:${HANDLE}:7`], { terminal: EPIC_TERMINAL, way: 'workflow' })
-  assert.deepEqual(storage[`session:${HANDLE}:15`], { terminal: EPIC_TERMINAL, way: 'sdd' })
+  assert.deepEqual(storage[`session:${HANDLE}:7`], { terminal: EPIC_TERMINAL })
+  assert.deepEqual(storage[`session:${HANDLE}:15`], { terminal: EPIC_TERMINAL })
   // The project keeps the harness of its last start.
   assert.equal(storage[`harness:${HANDLE}`], 'codex')
 })
@@ -1812,10 +1778,13 @@ const shell = (handle: string): Record<string, unknown> => ({ handle, title: '~/
 /** A terminal an agent runs in. */
 const agent = (handle: string, title = '✳ Claude Code'): Record<string, unknown> => ({ handle, title, agentIdentity: 'claude' })
 
-/** What the start of epic 7 remembers of its way and its terminal. */
-const remembered = (way: Way, terminal = EPIC_TERMINAL): Record<string, unknown> => ({
-  [`way:${HANDLE}:7`]: way,
-  [`session:${HANDLE}:7`]: { terminal, way }
+/** What the start of epic 7 remembers of its terminal. */
+const remembered = (terminal = EPIC_TERMINAL): Record<string, unknown> => ({ [`session:${HANDLE}:7`]: { terminal } })
+
+/** What a start of epic 7 by an earlier release of the panel remembered: its way besides its terminal. */
+const rememberedByEarlierRelease = (terminal = EPIC_TERMINAL): Record<string, unknown> => ({
+  [`way:${HANDLE}:7`]: 'workflow',
+  [`session:${HANDLE}:7`]: { terminal, way: 'workflow' }
 })
 
 interface SessionCase {
@@ -1895,28 +1864,28 @@ async function sessionRequest(options: SessionCase) {
 
 /** The session of an epic nobody started, by the defaults. */
 const NEW_EPIC: EpicSession = {
-  way: 'sdd',
   harness: 'claude',
   roles: DEFAULT_ROLES,
   worktree: null,
   alive: false,
-  terminal: null,
-  workflowBranches: false
+  terminal: null
 }
 
 test('epic.session: no working copy, by SDD', async () => {
   const none = await session({ copy: false })
   assert.deepEqual(none.answer, { ok: true, data: NEW_EPIC })
-  // Without a copy there is no place to look for a session in: the root is not one.
+  // Without a copy and without a remembered terminal there is no place to look for a session in.
   assert.deepEqual(none.listed, [])
-  // ConPort is not asked, and a question stores nothing.
+  // ConPort and git are not asked, and a question stores nothing.
   assert.deepEqual(none.f.conportCalls(), [])
+  assert.deepEqual(none.f.gitCalls(), [])
   assert.deepEqual(none.storage, {})
   assert.deepEqual(none.refusals, [])
-  // A terminal remembered for a copy that is gone is no session, whatever runs in the root.
-  const gone = await session({ copy: false, storage: remembered('sdd'), terminals: { root: [agent(EPIC_TERMINAL)] } })
+  // A terminal remembered for a copy that is gone: only that terminal counts in the root, and
+  // another agent working there is no session.
+  const gone = await session({ copy: false, storage: remembered(), terminals: { root: [agent('term-other')] } })
   assert.deepEqual(gone.answer, { ok: true, data: NEW_EPIC })
-  assert.deepEqual(gone.listed, [])
+  assert.deepEqual(gone.listed, gone.inRoot)
 })
 
 test('epic.session: a working copy and no session', async () => {
@@ -1932,7 +1901,7 @@ test('epic.session: a working copy and no session', async () => {
 
 test('epic.session: a live session by SDD', async () => {
   const { answer, copy, listed, inCopy } = await session({
-    storage: remembered('sdd'),
+    storage: remembered(),
     terminals: { copy: [shell('term-a'), shell('term-b'), agent(EPIC_TERMINAL)] }
   })
   assert.deepEqual(answer, { ok: true, data: { ...NEW_EPIC, worktree: copy, alive: true, terminal: EPIC_TERMINAL } })
@@ -1940,87 +1909,75 @@ test('epic.session: a live session by SDD', async () => {
 })
 
 test('epic.session: the main working tree on the branch of the epic is its working copy', async () => {
-  const { answer, f } = await session({ copy: false, base: 'epic-7', storage: remembered('sdd'), terminals: { root: [agent(EPIC_TERMINAL)] } })
+  const { answer, f } = await session({ copy: false, base: 'epic-7', storage: remembered(), terminals: { root: [agent(EPIC_TERMINAL)] } })
   assert.deepEqual(answer, { ok: true, data: { ...NEW_EPIC, worktree: f.root, alive: true, terminal: EPIC_TERMINAL } })
 })
 
-test('epic.session: no session in the root, by the workflow, with and without branches of an earlier run', async () => {
-  const WORKFLOW: EpicSession = { ...NEW_EPIC, way: 'workflow' }
-  // The remembered terminal is not listed: Orca was started again, its handles are new.
-  const gone = { copy: false, storage: remembered('workflow'), terminals: { root: [shell('term-a'), agent('term-new')] } }
-  const without = await session(gone)
-  assert.deepEqual(without.answer, { ok: true, data: WORKFLOW })
-  // The workflow runs in the root: its terminal is looked for there.
-  assert.deepEqual(without.listed, without.inRoot)
-  const withBranches = await session({ ...gone, refs: ['refs/heads/epic7/t12', 'refs/heads/epic7/t13'] })
-  assert.deepEqual(withBranches.answer, { ok: true, data: { ...WORKFLOW, workflowBranches: true } })
-  // The branch of the SDD skill and a branch under it are no branches of the workflow.
-  const others = await session({ ...gone, refs: ['refs/heads/epic-7', 'refs/heads/epic-7/notes'] })
-  assert.deepEqual(others.answer, { ok: true, data: WORKFLOW })
-  assert.deepEqual(others.f.gitCalls(), [['-C', others.f.root, 'for-each-ref', '--format=%(refname)', 'refs/heads/epic-7', 'refs/heads/epic7/*']])
-  // The way was chosen and no terminal remembered: there is nothing to look for.
-  const never = await session({ copy: false, storage: { [`way:${HANDLE}:7`]: 'workflow' }, terminals: { root: [agent('term-new')] } })
-  assert.deepEqual(never.answer, { ok: true, data: WORKFLOW })
-  assert.deepEqual(never.listed, [])
+test('epic.session: an old session record with way workflow is read, only its terminal', async () => {
+  // A start by an earlier release of the panel left `way` in the record and a key of its own;
+  // its session works in the root, and there is no working copy of the epic.
+  const storage = { [`way:${HANDLE}:7`]: 'workflow', [`session:${HANDLE}:7`]: { terminal: 't1', way: 'workflow' } }
+  const { answer, listed, inRoot } = await session({ copy: false, storage, terminals: { root: [shell('term-a'), agent('t1')] } })
+  // The state names no way: its terminal is t1, alive in the root.
+  assert.deepEqual(answer, { ok: true, data: { ...NEW_EPIC, alive: true, terminal: 't1' } })
+  assert.equal(answer.ok && 'way' in answer.data, false)
+  assert.equal(answer.ok && 'workflowBranches' in answer.data, false)
+  assert.deepEqual(listed, inRoot)
+  // Its agent left: the epic has no session and is offered a start, whatever other agent works in the root.
+  const left = await session({ copy: false, storage, terminals: { root: [shell('t1'), agent('term-other')] } })
+  assert.deepEqual(left.answer, { ok: true, data: NEW_EPIC })
+  // With a working copy of the epic, the record names the terminal looked for there.
+  const inCopy = await session({ storage, terminals: { copy: [shell('term-a'), agent('t1')] } })
+  assert.deepEqual(inCopy.answer, { ok: true, data: { ...NEW_EPIC, worktree: inCopy.copy, alive: true, terminal: 't1' } })
+  assert.deepEqual(inCopy.listed, inCopy.inCopy)
 })
 
-test('epic.session: a live session by the workflow', async () => {
-  const { answer, listed, inRoot } = await session({
-    copy: false,
-    storage: remembered('workflow'),
-    refs: ['refs/heads/epic7/t12'],
-    terminals: { root: [shell('term-a'), agent(EPIC_TERMINAL)] }
-  })
-  assert.deepEqual(answer, { ok: true, data: { ...NEW_EPIC, way: 'workflow', alive: true, terminal: EPIC_TERMINAL, workflowBranches: true } })
-  assert.deepEqual(listed, inRoot)
+test('epic.session reads no branches: git is not asked', async () => {
+  for (const refs of [['refs/heads/epic7/t12', 'refs/heads/epic7/t13'], ['refs/heads/epic-7']]) {
+    const { answer, f } = await session({ copy: false, refs })
+    assert.deepEqual(answer, { ok: true, data: NEW_EPIC }, refs.join(' '))
+    assert.deepEqual(f.gitCalls(), [])
+  }
 })
 
 test('epic.session: the remembered terminal with an agent identity is alive, with an empty one is not', async () => {
-  for (const way of ['sdd', 'workflow'] as const) {
-    const place = (terminals: unknown[]): SessionCase =>
-      way === 'sdd'
-        ? { storage: remembered(way), terminals: { copy: terminals } }
-        : { copy: false, storage: remembered(way), terminals: { root: terminals } }
-    const named = await session(place([agent(EPIC_TERMINAL)]))
-    assert.equal(named.answer.ok && named.answer.data.alive, true, way)
-    assert.equal(named.answer.ok && named.answer.data.terminal, EPIC_TERMINAL, way)
-    // The agent left its terminal: a shell is what remains of it. However orca says "no agent".
-    for (const agentIdentity of ['', null, '  ']) {
-      const emptied = { handle: EPIC_TERMINAL, title: 'conport epic 7 · SDD', agentIdentity }
-      const left = await session(place([shell('term-a'), emptied]))
-      assert.equal(left.answer.ok && left.answer.data.alive, false, `${way} ${JSON.stringify(agentIdentity)}`)
-      assert.equal(left.answer.ok && left.answer.data.terminal, null)
-      // Another agent in the same place: in the copy of the epic it is the session, or a start
-      // would open a second agent over it; in the root, where any agent may work, it is not.
-      const beside = await session(place([emptied, agent('term-other')]))
-      assert.equal(beside.answer.ok && beside.answer.data.alive, way === 'sdd', `${way} ${JSON.stringify(agentIdentity)}`)
-      assert.equal(beside.answer.ok && beside.answer.data.terminal, way === 'sdd' ? 'term-other' : null)
-    }
+  const place = (terminals: unknown[]): SessionCase => ({ storage: remembered(), terminals: { copy: terminals } })
+  const named = await session(place([agent(EPIC_TERMINAL)]))
+  assert.equal(named.answer.ok && named.answer.data.alive, true)
+  assert.equal(named.answer.ok && named.answer.data.terminal, EPIC_TERMINAL)
+  // The agent left its terminal: a shell is what remains of it. However orca says "no agent".
+  for (const agentIdentity of ['', null, '  ']) {
+    const emptied = { handle: EPIC_TERMINAL, title: 'conport epic 7 · SDD', agentIdentity }
+    const left = await session(place([shell('term-a'), emptied]))
+    assert.equal(left.answer.ok && left.answer.data.alive, false, JSON.stringify(agentIdentity))
+    assert.equal(left.answer.ok && left.answer.data.terminal, null)
+    // Another agent in the copy of the epic is the session, or a start would open a second agent over it.
+    const beside = await session(place([emptied, agent('term-other')]))
+    assert.equal(beside.answer.ok && beside.answer.data.alive, true, JSON.stringify(agentIdentity))
+    assert.equal(beside.answer.ok && beside.answer.data.terminal, 'term-other')
   }
 })
 
 test('epic.session: a remembered terminal without the field is alive', async () => {
   // An Orca that does not say who runs in a terminal: the terminal being there is all there is to know.
   const bare = (handle: string): Record<string, unknown> => ({ handle, title: 'zsh' })
-  const sdd = await session({ storage: remembered('sdd'), terminals: { copy: [bare('term-a'), bare(EPIC_TERMINAL)] } })
+  const sdd = await session({ storage: remembered(), terminals: { copy: [bare('term-a'), bare(EPIC_TERMINAL)] } })
   assert.equal(sdd.answer.ok && sdd.answer.data.alive, true)
   assert.equal(sdd.answer.ok && sdd.answer.data.terminal, EPIC_TERMINAL)
-  const workflow = await session({ copy: false, storage: remembered('workflow'), terminals: { root: [bare(EPIC_TERMINAL)] } })
-  assert.equal(workflow.answer.ok && workflow.answer.data.alive, true)
   // Without the remembered one, a terminal that names no agent is not known to hold one.
-  const unknown = await session({ storage: remembered('sdd'), terminals: { copy: [bare('term-a'), bare('term-b')] } })
+  const unknown = await session({ storage: remembered(), terminals: { copy: [bare('term-a'), bare('term-b')] } })
   assert.equal(unknown.answer.ok && unknown.answer.data.alive, false)
 })
 
 test('epic.session: a remembered terminal that is gone falls back to the working copy', async () => {
   // Orca was started again: the agent of the copy runs under a new handle.
-  const again = await session({ storage: remembered('sdd'), terminals: { copy: [shell('term-a'), shell('term-b'), agent('term-new')] } })
+  const again = await session({ storage: remembered(), terminals: { copy: [shell('term-a'), shell('term-b'), agent('term-new')] } })
   assert.deepEqual(again.answer, { ok: true, data: { ...NEW_EPIC, worktree: again.copy, alive: true, terminal: 'term-new' } })
   // No terminal was ever remembered, and an agent works in the copy.
   const never = await session({ terminals: { copy: [shell('term-a'), agent('term-new'), agent('term-later')] } })
   assert.equal(never.answer.ok && never.answer.data.terminal, 'term-new')
   // The two shells of the copy are no session.
-  const shells = await session({ storage: remembered('sdd'), terminals: { copy: [shell('term-a'), shell('term-b')] } })
+  const shells = await session({ storage: remembered(), terminals: { copy: [shell('term-a'), shell('term-b')] } })
   assert.deepEqual(shells.answer, { ok: true, data: { ...NEW_EPIC, worktree: shells.copy } })
   // A record that names no terminal is no record.
   for (const record of [{}, { terminal: '' }, { terminal: 7 }, 'term-epic', null]) {
@@ -2032,11 +1989,15 @@ test('epic.session: a remembered terminal that is gone falls back to the working
 test('epic.session: the terminal of the old dispatcher in the root is no session', async () => {
   // Titles are not read: neither the one the dispatcher gave its terminal nor the ones of a start.
   const root = [agent('term-old', 'conport epic 7'), agent('term-titled', 'conport epic 7 · workflow'), agent('term-sdd', 'conport epic 7 · SDD')]
-  for (const storage of [{ [`way:${HANDLE}:7`]: 'workflow' }, remembered('workflow')]) {
-    const byWorkflow = await session({ copy: false, storage, terminals: { root } })
-    assert.deepEqual(byWorkflow.answer, { ok: true, data: { ...NEW_EPIC, way: 'workflow' } })
-  }
-  // By SDD the root is not even asked for.
+  // The old key of the way alone sends no search to the root; a remembered terminal is looked for
+  // there by its handle, and none of these is it.
+  const byWay = await session({ copy: false, storage: { [`way:${HANDLE}:7`]: 'workflow' }, terminals: { root } })
+  assert.deepEqual(byWay.answer, { ok: true, data: NEW_EPIC })
+  assert.deepEqual(byWay.listed, [])
+  const byRecord = await session({ copy: false, storage: rememberedByEarlierRelease(), terminals: { root } })
+  assert.deepEqual(byRecord.answer, { ok: true, data: NEW_EPIC })
+  assert.deepEqual(byRecord.listed, byRecord.inRoot)
+  // Nothing remembered: the root is not even asked for.
   const bySdd = await session({ copy: false, terminals: { root } })
   assert.deepEqual(bySdd.answer, { ok: true, data: NEW_EPIC })
   assert.deepEqual(bySdd.listed, [])
@@ -2045,10 +2006,12 @@ test('epic.session: the terminal of the old dispatcher in the root is no session
   assert.deepEqual(withCopy.listed, withCopy.inCopy)
 })
 
-test('epic.session answers the stored way, harness and roles, and the defaults for a new epic', async () => {
+test('epic.session answers the stored harness and roles, and the defaults for a new epic', async () => {
   const chosen = async (storage: Record<string, unknown>) => {
     const { answer } = await session({ copy: false, storage, terminals: { root: [] } })
-    return answer.ok ? { way: answer.data.way, harness: answer.data.harness, roles: answer.data.roles } : answer.error
+    // The state names no way, whatever was stored.
+    assert.equal(answer.ok && 'way' in answer.data, false)
+    return answer.ok ? { harness: answer.data.harness, roles: answer.data.roles } : answer.error
   }
   assert.deepEqual(DEFAULT_ROLES, {
     implementer: 'conport:sdd-implementer',
@@ -2056,9 +2019,9 @@ test('epic.session answers the stored way, harness and roles, and the defaults f
     gapHunter: 'conport:sdd-gap-hunter',
     finalReviewer: 'conport:sdd-final-reviewer'
   })
-  assert.deepEqual(await chosen({}), { way: 'sdd', harness: 'claude', roles: DEFAULT_ROLES })
+  assert.deepEqual(await chosen({}), { harness: 'claude', roles: DEFAULT_ROLES })
   // A new epic takes the harness of the last start in the project.
-  assert.deepEqual(await chosen({ [`harness:${HANDLE}`]: 'codex' }), { way: 'sdd', harness: 'codex', roles: DEFAULT_ROLES })
+  assert.deepEqual(await chosen({ [`harness:${HANDLE}`]: 'codex' }), { harness: 'codex', roles: DEFAULT_ROLES })
   // What another epic and another project chose, and the old record of the project, are not read.
   const elsewhere = {
     [`way:${HANDLE}:15`]: 'workflow',
@@ -2072,40 +2035,37 @@ test('epic.session answers the stored way, harness and roles, and the defaults f
     [`roles:${HANDLE}`]: ROLES,
     [`prepare:${HANDLE}`]: 'cursor'
   }
-  assert.deepEqual(await chosen(elsewhere), { way: 'sdd', harness: 'claude', roles: DEFAULT_ROLES })
+  assert.deepEqual(await chosen(elsewhere), { harness: 'claude', roles: DEFAULT_ROLES })
   // The records of the epic itself win over the harness of the project.
   const own = { [`way:${HANDLE}:7`]: 'workflow', [`harness:${HANDLE}:7`]: 'claude', [`roles:${HANDLE}:7`]: TYPES, [`harness:${HANDLE}`]: 'codex' }
-  assert.deepEqual(await chosen({ ...elsewhere, ...own }), { way: 'workflow', harness: 'claude', roles: TYPES })
+  assert.deepEqual(await chosen({ ...elsewhere, ...own }), { harness: 'claude', roles: TYPES })
   // A record that is not what a start writes is no record.
   const broken = { [`way:${HANDLE}:7`]: 'dispatcher', [`harness:${HANDLE}:7`]: '', [`roles:${HANDLE}:7`]: { ...TYPES, reviewer: 7 }, [`harness:${HANDLE}`]: 3 }
-  assert.deepEqual(await chosen(broken), { way: 'sdd', harness: 'claude', roles: DEFAULT_ROLES })
-  assert.deepEqual(await chosen({ [`roles:${HANDLE}:7`]: {} }), { way: 'sdd', harness: 'claude', roles: DEFAULT_ROLES })
+  assert.deepEqual(await chosen(broken), { harness: 'claude', roles: DEFAULT_ROLES })
+  assert.deepEqual(await chosen({ [`roles:${HANDLE}:7`]: {} }), { harness: 'claude', roles: DEFAULT_ROLES })
 })
 
 test('epic.session finds the session epic.start has just opened', async () => {
-  for (const way of ['sdd', 'workflow'] as const) {
-    const machine = await startMachine({
-      // The fake lists the copy from the outset: the start takes it as it is.
-      rows: way === 'sdd' ? (dir) => [worktreeRow(join(dir, 'copies', 'repo', 'epic-7'), 'epic-7')] : undefined,
-      refs: way === 'sdd' ? ['refs/heads/epic-7'] : [],
-      orca: [{ match: 'terminal list --worktree path:', stdout: json({ ok: true, result: { terminals: [shell('term-a'), agent(EPIC_TERMINAL)], truncated: false } }) }]
-    })
-    // Named by its name at the start, the project is remembered by its handle: the panel asks by that.
-    const begun = await startOn(machine, { way, project: 'shop-api' })
-    assert.equal(begun.answer.ok, true)
-    const { f, worker } = machine
-    const answer = await worker.request('epic.session', { project: HANDLE, root: f.root, epic: 7 })
-    await worker.deactivate()
-    const place = way === 'sdd' ? begun.copy : f.root
-    const expected: EpicSession = { way, harness: 'claude', roles: TYPES, worktree: way === 'sdd' ? begun.copy : null, alive: true, terminal: EPIC_TERMINAL, workflowBranches: false }
-    assert.deepEqual(answer, { ok: true, data: expected }, way)
-    assert.deepEqual(f.orcaCalls().at(-1), ['terminal', 'list', '--worktree', `path:${place}`, '--limit', '10000', '--json'])
-  }
+  const machine = await startMachine({
+    // The fake lists the copy from the outset: the start takes it as it is.
+    rows: (dir) => [worktreeRow(join(dir, 'copies', 'repo', 'epic-7'), 'epic-7')],
+    refs: ['refs/heads/epic-7'],
+    orca: [{ match: 'terminal list --worktree path:', stdout: json({ ok: true, result: { terminals: [shell('term-a'), agent(EPIC_TERMINAL)], truncated: false } }) }]
+  })
+  // Named by its name at the start, the project is remembered by its handle: the panel asks by that.
+  const begun = await startOn(machine, { project: 'shop-api' })
+  assert.equal(begun.answer.ok, true)
+  const { f, worker } = machine
+  const answer = await worker.request('epic.session', { project: HANDLE, root: f.root, epic: 7 })
+  await worker.deactivate()
+  const expected: EpicSession = { harness: 'claude', roles: TYPES, worktree: begun.copy, alive: true, terminal: EPIC_TERMINAL }
+  assert.deepEqual(answer, { ok: true, data: expected })
+  assert.deepEqual(f.orcaCalls().at(-1), ['terminal', 'list', '--worktree', `path:${begun.copy}`, '--limit', '10000', '--json'])
 })
 
 test('epic.session answers with the main working tree on no branch', async () => {
   // The base of a new copy is of no matter to the question whether a session is alive.
-  const { answer, copy } = await session({ base: null, storage: remembered('sdd'), terminals: { copy: [agent(EPIC_TERMINAL)] } })
+  const { answer, copy } = await session({ base: null, storage: remembered(), terminals: { copy: [agent(EPIC_TERMINAL)] } })
   assert.deepEqual(answer, { ok: true, data: { ...NEW_EPIC, worktree: copy, alive: true, terminal: EPIC_TERMINAL } })
 })
 
@@ -2127,33 +2087,31 @@ test('epic.session decides nothing on a list orca cut short', async () => {
     action: 'Close the terminals you do not need in this Orca workspace and press Refresh.'
   }
   // The terminal of the session may be among the rows cut off.
-  const cut = await session({ storage: remembered('sdd'), terminals: { copy: [shell('term-a')] }, terminalsTruncated: true })
+  const cut = await session({ storage: remembered(), terminals: { copy: [shell('term-a')] }, terminalsTruncated: true })
   assert.deepEqual(cut.answer, { ok: false, error: terminals })
   assert.deepEqual(refusalText(terminals), { what: terminals.message, action: terminals.action })
   // A session found in the part that came is alive all the same.
-  const found = await session({ storage: remembered('sdd'), terminals: { copy: [agent(EPIC_TERMINAL)] }, terminalsTruncated: true })
+  const found = await session({ storage: remembered(), terminals: { copy: [agent(EPIC_TERMINAL)] }, terminalsTruncated: true })
   assert.equal(found.answer.ok && found.answer.data.alive, true)
   // The remembered terminal is there with no agent in it: another agent of the copy may be cut off.
-  const left = await session({ storage: remembered('sdd'), terminals: { copy: [shell(EPIC_TERMINAL)] }, terminalsTruncated: true })
+  const left = await session({ storage: remembered(), terminals: { copy: [shell(EPIC_TERMINAL)] }, terminalsTruncated: true })
   assert.deepEqual(left.answer, { ok: false, error: terminals })
   // In the root nothing cut off would change that: only the remembered terminal counts there.
-  const inRoot = await session({ copy: false, storage: remembered('workflow'), terminals: { root: [shell(EPIC_TERMINAL)] }, terminalsTruncated: true })
-  assert.equal(inRoot.answer.ok && inRoot.answer.data.alive, false)
+  const inRoot = await session({ copy: false, storage: rememberedByEarlierRelease(), terminals: { root: [shell(EPIC_TERMINAL)] }, terminalsTruncated: true })
+  assert.deepEqual(inRoot.answer, { ok: true, data: NEW_EPIC })
 })
 
-test('epic.session returns a refusal of orca and of git', async () => {
+test('epic.session returns a refusal of orca, and a git that fails is not asked', async () => {
   const refusal = { code: 'runtime_unavailable', message: 'Orca is not running', action: 'start Orca' }
   const refused = (match: string): FakeAnswer => ({ match, code: 1, stdout: json({ ok: false, error: refusal }) })
   for (const match of ['worktree list', 'terminal list']) {
     const { answer } = await session({ orca: [refused(match)], terminals: { copy: [] } })
     assert.deepEqual(answer, { ok: false, error: refusal }, match)
   }
-  const git = await session({ git: [{ match: '-C ', code: 128, stderr: 'fatal: not a repository\n' }] })
-  assert.deepEqual(git.answer, {
-    ok: false,
-    error: { code: 'git_failed', message: 'fatal: not a repository', action: 'Check the repository with git status in its root and try again.' }
-  })
-  assert.deepEqual(git.f.orcaCalls(), [])
+  // The branches are no part of the state: a git that would fail is never asked.
+  const git = await session({ copy: false, git: [{ match: '-C ', code: 128, stderr: 'fatal: not a repository\n' }] })
+  assert.deepEqual(git.answer, { ok: true, data: NEW_EPIC })
+  assert.deepEqual(git.f.gitCalls(), [])
 })
 
 /** What a request about the session of an epic answers when its project is not named by the handle. */
@@ -2165,7 +2123,7 @@ const NOT_HANDLE = {
 
 test('epic.session refuses a project that is not named by its handle', async () => {
   // What a start by this name remembered lies under the handle: an answer by the name would say "no session".
-  const stored = { ...remembered('sdd'), 'way:shop-api:7': 'workflow', 'session:shop-api:7': { terminal: EPIC_TERMINAL, way: 'workflow' } }
+  const stored = { ...remembered(), 'way:shop-api:7': 'workflow', 'session:shop-api:7': { terminal: EPIC_TERMINAL, way: 'workflow' } }
   // A name, an address by name, a handle a letter short, a letter long, in capitals, and no string at all.
   for (const project of ['shop-api', 'pers/shop-api', `${HANDLE}/shop-api`, '', HANDLE.slice(0, -1), `${HANDLE}x`, HANDLE.toUpperCase(), 7, null]) {
     const { answer, f } = await session({ project, storage: stored, terminals: { copy: [agent(EPIC_TERMINAL)], root: [agent(EPIC_TERMINAL)] } })
@@ -2314,7 +2272,7 @@ test('subagents.get refuses a harness that is not named', async () => {
 const SWITCH = (terminal: string): string[][] => [['terminal', 'switch', '--terminal', terminal, '--json']]
 
 test('terminal.show switches to the live terminal of the session of the epic', async () => {
-  const sdd = await show({ storage: remembered('sdd'), terminals: { copy: [shell('term-a'), agent(EPIC_TERMINAL)] } })
+  const sdd = await show({ storage: remembered(), terminals: { copy: [shell('term-a'), agent(EPIC_TERMINAL)] } })
   assert.deepEqual(sdd.answer, { ok: true, data: null })
   assert.deepEqual(sdd.switched, SWITCH(EPIC_TERMINAL))
   // The copies and their terminals are read anew, the branches and ConPort are not.
@@ -2323,25 +2281,27 @@ test('terminal.show switches to the live terminal of the session of the epic', a
   assert.deepEqual([sdd.f.gitCalls(), sdd.f.conportCalls()], [[], []])
   assert.deepEqual(sdd.refusals, [])
   // The terminal is found by the rule of epic.session: after a restart of Orca, the agent of the copy.
-  const again = await show({ storage: remembered('sdd'), terminals: { copy: [shell('term-a'), agent('term-new')] } })
+  const again = await show({ storage: remembered(), terminals: { copy: [shell('term-a'), agent('term-new')] } })
   assert.deepEqual(again.answer, { ok: true, data: null })
   assert.deepEqual(again.switched, SWITCH('term-new'))
-  const workflow = await show({ copy: false, storage: remembered('workflow'), terminals: { root: [agent('term-other'), agent(EPIC_TERMINAL)] } })
-  assert.deepEqual(workflow.answer, { ok: true, data: null })
-  assert.deepEqual(workflow.switched, SWITCH(EPIC_TERMINAL))
-  assert.deepEqual(workflow.listed, workflow.inRoot)
+  // The session a start by an earlier release left in the root: its remembered terminal, not another agent there.
+  const old = await show({ copy: false, storage: rememberedByEarlierRelease(), terminals: { root: [agent('term-other'), agent(EPIC_TERMINAL)] } })
+  assert.deepEqual(old.answer, { ok: true, data: null })
+  assert.deepEqual(old.switched, SWITCH(EPIC_TERMINAL))
+  assert.deepEqual(old.listed, old.inRoot)
 })
 
 test('terminal.show refuses when the epic has no live session, and switches to nothing', async () => {
   const error = { code: 'session_gone', message: 'Epic 7 has no live session: its terminal is closed or its agent has exited', action: 'Press Refresh.' }
   const gone: SessionCase[] = [
     // No working copy; a copy with its two shells; an agent that left its terminal.
-    { copy: false, storage: remembered('sdd') },
-    { storage: remembered('sdd'), terminals: { copy: [shell('term-a'), shell('term-b')] } },
-    { storage: remembered('sdd'), terminals: { copy: [shell(EPIC_TERMINAL)] } },
-    // By the workflow: a terminal never remembered, one that is gone, and an agent of someone else in the root.
+    { copy: false, storage: remembered(), terminals: { root: [] } },
+    { storage: remembered(), terminals: { copy: [shell('term-a'), shell('term-b')] } },
+    { storage: remembered(), terminals: { copy: [shell(EPIC_TERMINAL)] } },
+    // The records of a start by an earlier release: no terminal remembered, and one that is gone,
+    // with an agent of someone else in the root.
     { copy: false, storage: { [`way:${HANDLE}:7`]: 'workflow' }, terminals: { root: [agent('term-other')] } },
-    { copy: false, storage: remembered('workflow'), terminals: { root: [agent('term-other')] } }
+    { copy: false, storage: rememberedByEarlierRelease(), terminals: { root: [agent('term-other')] } }
   ]
   for (const [i, options] of gone.entries()) {
     const { answer, switched } = await show(options)
@@ -2352,14 +2312,14 @@ test('terminal.show refuses when the epic has no live session, and switches to n
 })
 
 test('terminal.show refuses a project that is not named by its handle, and returns a refusal of orca', async () => {
-  const byName = await show({ project: 'shop-api', storage: remembered('sdd'), terminals: { copy: [agent(EPIC_TERMINAL)] } })
+  const byName = await show({ project: 'shop-api', storage: remembered(), terminals: { copy: [agent(EPIC_TERMINAL)] } })
   assert.deepEqual(byName.answer, { ok: false, error: NOT_HANDLE })
   assert.deepEqual(byName.f.orcaCalls(), [])
   // The panel asked for this terminal: that orca cannot show it is told, not only logged.
   const refusal = { code: 'terminal_not_found', message: 'no such terminal' }
   for (const match of ['worktree list', 'terminal list', 'terminal switch']) {
     const refused = await show({
-      storage: remembered('sdd'),
+      storage: remembered(),
       terminals: { copy: [agent(EPIC_TERMINAL)] },
       orca: [{ match, code: 1, stdout: json({ ok: false, error: refusal }) }]
     })

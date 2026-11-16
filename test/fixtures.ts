@@ -130,13 +130,11 @@ export const untyped = (harness: string): SubagentList => ({ harness, typed: fal
 
 /** `epic.session` of an epic never started: the defaults, no working copy, no session. */
 export const session = (extra: Partial<EpicSession> = {}): EpicSession => ({
-  way: 'sdd',
   harness: 'claude',
   roles: DEFAULT_ROLES,
   worktree: null,
   alive: false,
   terminal: null,
-  workflowBranches: false,
   ...extra
 })
 
@@ -187,6 +185,3 @@ export const SESSION_COPY: EpicSession = session({ worktree: '/work/shop/.claude
 
 /** An agent works in the working copy of epic 7. */
 export const SESSION_ALIVE: EpicSession = { ...SESSION_COPY, alive: true, terminal: 'term-epic-7' }
-
-/** The workflow was chosen for the epic, and branches of an earlier start of it are there. */
-export const SESSION_WORKFLOW: EpicSession = session({ way: 'workflow', workflowBranches: true })

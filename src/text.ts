@@ -1,6 +1,6 @@
 // What the panel says. Shared by the worker and the panel: no Node imports.
 import { FIXER_TYPE } from './cli'
-import type { EpicSummary, EpicTask, EpicTaskStatus, HandMode, Milestone, OutsideTask, Roles, Way } from './protocol'
+import type { EpicSummary, EpicTask, EpicTaskStatus, HandMode, Milestone, OutsideTask, Roles } from './protocol'
 
 /** The word for `n` things: `one` for exactly 1, `many` for any other number. */
 export function plural(n: number, one: string, many: string): string {
@@ -80,10 +80,12 @@ export function handNotice(task: number, mode: HandMode, project: string): strin
 }
 
 /** Where the agent of an epic is: said once it is started, and on the screen of an epic whose session is alive. */
-export const startNotice = (epic: number, way: Way): string =>
-  way === 'sdd'
-    ? `The agent of epic ${epic} is open in the terminal of working copy epic-${epic}; it asks its questions there`
-    : `The agent of epic ${epic} is open in a terminal at the repository root; it asks its questions there`
+export const startNotice = (epic: number): string =>
+  `The agent of epic ${epic} is open in the terminal of working copy epic-${epic}; it asks its questions there`
+
+/** On the screen of an epic whose live session an earlier release of the panel opened in the repository root. */
+export const rootSessionNotice = (epic: number): string =>
+  `The agent of epic ${epic} is open in a terminal at the repository root; it asks its questions there`
 
 /** Why a project of Orca that is a plain folder cannot run an epic. */
 export const FOLDER_NOTE = 'Folder without git — nothing to run'
@@ -96,18 +98,8 @@ export const ROLE_TITLES: Record<keyof Roles, string> = {
   finalReviewer: 'Final reviewer'
 }
 
-/** The two ways an epic is done. */
-export const WAY_LABELS: Record<Way, string> = { sdd: 'SDD skill', workflow: '/conport:epic' }
-
-/** Under the switch, by the workflow: what it does on its own. */
-export const WORKFLOW_NOTE =
-  'The workflow works in the repository root on the main branch: it starts with its own checks, merges the tasks into the main branch and closes the epic itself'
-
 /** Under the roles: who fixes what a review found is not chosen. */
 export const FIXER_NOTE = `Fixes: the same implementer, otherwise ${FIXER_TYPE}`
-
-/** Why the role lists are off by the workflow. */
-export const ROLES_FIXED_NOTE = 'The workflow has its subagent types built in'
 
 /** Why the role lists are off for a harness whose subagents have no types. */
 export const ROLES_UNTYPED_NOTE = 'This harness has no typed subagents: the roles follow the texts of conport agent <role>'
@@ -118,11 +110,8 @@ export const rolesUnavailableNote = (what: string): string => `The subagent list
 /** Beside a role whose type the list of the harness lacks. */
 export const TYPE_MISSING_NOTE = 'Type not found — install or update the conport plugin.'
 
-/** Under Start by the SDD skill, when the working copy of the epic is there and no agent is in it. */
+/** Under Start, when the working copy of the epic is there and no agent is in it. */
 export const COPY_NOTE = 'The working copy is already there: the agent resumes where the work stopped'
-
-/** Under Start by the workflow, when branches of an earlier start of it are there. */
-export const BRANCHES_NOTE = 'The workflow picks up the branches from the earlier start'
 
 /** Under a Start that waits: the epic was started and its agent is not yet seen in the terminal. */
 export const STARTED_NOTE = 'The agent is opening in a terminal: press Refresh to see its session'
@@ -132,12 +121,6 @@ export const ROLES_NO_HARNESS_NOTE = 'Harness not found: its subagent types cann
 
 /** What a second start does while the session of the epic is alive: asked before it. */
 export const RESTART_NOTE = "The epic's session is live. A new start opens one more agent with the same task; the old terminal stays open."
-
-/** The refusal `way_needs_claude`, said beside a start that cannot be pressed. */
-export const WAY_NEEDS_CLAUDE = {
-  what: 'The /conport:epic mode is only in Claude Code with the conport plugin',
-  action: 'Choose the Claude Code harness.'
-} as const
 
 /** A status of a task of an epic, as its row says it. */
 export const TASK_STATUS: Record<EpicTaskStatus, string> = {
@@ -266,7 +249,6 @@ export const REFUSED = {
     what: `Epic ${epic} has no spec or no plan`,
     action: 'Prepare the epic in the Prepare tab.'
   }),
-  wayNeedsClaude: { what: WAY_NEEDS_CLAUDE.what, action: WAY_NEEDS_CLAUDE.action },
   roleInvalid: { what: 'The subagent type is not a plain name', action: 'Choose a type for the role from the list.' },
   agentCannotPrepare: (noun: 'agent' | 'harness', agent: string): FailureText => ({
     what: `The ${noun} “${agent}” does not take a task at start`,
@@ -301,8 +283,6 @@ export function promptRefusal(code: string, subject: PromptSubject): FailureText
       return epic === undefined ? undefined : REFUSED.epicNotPreparable(epic)
     case 'epic_not_ready':
       return epic === undefined ? undefined : REFUSED.epicNotReady(epic)
-    case 'way_needs_claude':
-      return REFUSED.wayNeedsClaude
     case 'role_invalid':
       return REFUSED.roleInvalid
     case 'agent_cannot_prepare':
@@ -377,7 +357,7 @@ const UNKNOWN_ACTION = 'Press Refresh; if the refusal repeats, update the plugin
  * The refusals the worker words itself, in the panel's words: shown as they are. Every other refusal
  * comes from the conport or orca CLI, worded for a terminal, or names a program that could not start.
  */
-const OWN_REFUSALS = new Set([
+export const OWN_REFUSALS: ReadonlySet<string> = new Set([
   'workspaces_truncated',
   'terminals_truncated',
   'project_not_handle',
@@ -396,11 +376,8 @@ const OWN_REFUSALS = new Set([
   'agent_not_found',
   'agent_cannot_prepare',
   'epic_not_ready',
-  'way_needs_claude',
   'role_invalid',
   'root_detached',
-  'epic_started_sdd',
-  'epic_started_workflow',
   'epic_branch_taken',
   'git_failed',
   'bad_output',

@@ -64,28 +64,29 @@ test('the texts of the tasks are no longer built by the plugin', () => {
 test('the epic by the SDD skill in Claude Code: the working copy, the base and the four types', () => {
   const args = epicPromptArgs({ epic: 7, project: HANDLE, harness: 'claude', worktree: '/work/app-epic-7', base: 'main', roles: OTHER_ROLES })
   assert.deepEqual(args, [
-    'prompt', 'epic', '7', '-p', HANDLE, '--way', 'sdd', '--harness', 'claude', '--worktree', '/work/app-epic-7', '--base', 'main',
+    'prompt', 'epic', '7', '-p', HANDLE, '--harness', 'claude', '--worktree', '/work/app-epic-7', '--base', 'main',
     '--implementer', 'sdd-implementer', '--reviewer', 'team:strict-reviewer', '--gap-hunter', 'gap.hunter', '--final-reviewer', 'final_reviewer-2',
     '--json'
   ])
 })
 
 test('the epic by the SDD skill in another harness names no type: the roles go by the texts of the CLI', () => {
-  // Types the SDD way of Claude Code would refuse are never read for another harness.
+  // Types Claude Code would refuse are never read for another harness.
   const odd = { ...OTHER_ROLES, reviewer: 'my reviewer' }
   for (const harness of ['codex', 'cursor']) {
     const args = epicPromptArgs({ epic: 12, project: HANDLE, harness, worktree: '/x/y/epic-12', base: 'trunk', roles: odd })
     assert.deepEqual(args, [
-      'prompt', 'epic', '12', '-p', HANDLE, '--way', 'sdd', '--harness', harness, '--worktree', '/x/y/epic-12', '--base', 'trunk', '--json'
+      'prompt', 'epic', '12', '-p', HANDLE, '--harness', harness, '--worktree', '/x/y/epic-12', '--base', 'trunk', '--json'
     ])
   }
 })
 
-test('the epic by the workflow: the root and its branch, no working copy and no type', () => {
-  const args = epicPromptArgs({ epic: 7, project: HANDLE, harness: 'claude', root: '/work/app', base: 'main', way: 'workflow' })
-  assert.deepEqual(args, [
-    'prompt', 'epic', '7', '-p', HANDLE, '--way', 'workflow', '--harness', 'claude', '--root', '/work/app', '--base', 'main', '--json'
-  ])
+test('the epic names no way: the SDD skill is the only one', () => {
+  for (const harness of ['claude', 'codex', 'cursor']) {
+    const args = epicPromptArgs({ epic: 7, project: HANDLE, harness, worktree: '/work/app-epic-7', base: 'main', roles: DEFAULT_ROLES })
+    assert.equal(args.includes('--way'), false, harness)
+    assert.equal(args.includes('--root'), false, harness)
+  }
 })
 
 test('the preparation of an epic is asked for the panel of Orca', () => {
@@ -105,9 +106,9 @@ test('a value the shell would read is one argument of the command: the CLI is ru
   const project = `it's "q" $HOME \`x\``
   const root = "/work/my app's"
   const base = "it's-$(x)-`y`;z"
-  const epic = epicPromptArgs({ epic: 7, project, harness: 'claude', root, base, way: 'workflow' })
+  const epic = epicPromptArgs({ epic: 7, project, harness: 'claude', worktree: root, base, roles: DEFAULT_ROLES })
   assert.equal(epic[epic.indexOf('-p') + 1], project)
-  assert.equal(epic[epic.indexOf('--root') + 1], root)
+  assert.equal(epic[epic.indexOf('--worktree') + 1], root)
   assert.equal(epic[epic.indexOf('--base') + 1], base)
   const task = taskPromptArgs({ task: 41, project, mode: 'do', agent: 'claude', root })
   assert.equal(task[task.indexOf('--root') + 1], root)

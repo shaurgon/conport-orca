@@ -17,7 +17,6 @@ import {
   session,
   SESSION_ALIVE,
   SESSION_COPY,
-  SESSION_WORKFLOW,
   SUBAGENTS,
   TASK_LIST,
   untyped
@@ -352,7 +351,7 @@ test('a slow answer for a project left meanwhile is dropped', async () => {
       const answer = ok(input.root === BILLING.root ? billingEpics : EPIC_LIST)
       return new Promise((resolve) => pending.push(() => resolve(answer)))
     },
-    'epic.start': () => ok({ terminal: 't', way: 'sdd', worktree: '/repo/epic-15' })
+    'epic.start': () => ok({ terminal: 't', worktree: '/repo/epic-15' })
   })
   view = await mount(panel, { host, persisted: at(15) })
   await openPicker(view, BILLING.root)
@@ -559,7 +558,7 @@ const ROLE_LABELS = ['Implementer', 'Reviewer', 'Gap hunter', 'Final reviewer'] 
 const DEFAULT_TYPES = ['conport:sdd-implementer', 'conport:sdd-task-reviewer', 'conport:sdd-gap-hunter', 'conport:sdd-final-reviewer']
 const WITH_CURSOR = { agents: [...AGENTS.agents, CURSOR] }
 const refused = (code: string, message: string, action: string) => ({ ok: false, error: { code, message, action } })
-const started = (way: 'sdd' | 'workflow' = 'sdd') => ok({ terminal: 'term-9', way, worktree: way === 'sdd' ? '/repo/.claude/worktrees/repo/epic-15' : null })
+const started = () => ok({ terminal: 'term-9', worktree: '/repo/.claude/worktrees/repo/epic-15' })
 
 /** The type chosen in each of the four role lists, top to bottom, and whether each list is off. */
 const typesOf = (v: TestPanel): unknown[] => ROLE_LABELS.map((label) => v.find({ label })?.props.value)
@@ -598,16 +597,13 @@ test('opening an epic reads its session, its tasks and the subagent types once, 
   assert.deepEqual(view.refusals, [])
 })
 
-test('the epic screen offers the way, the harness and four roles with the default types', async () => {
+test('the epic screen offers the harness and four roles with the default types, and no mode', async () => {
   const { host } = stub({ 'agents.get': () => ok(WITH_CURSOR) })
   view = await mount(panel, { host, persisted: at(15) })
-  const way = view.find({ label: 'Mode' })
-  assert.equal(way?.type, 'RadioGroup')
-  assert.equal(way?.props.value, 'sdd')
-  assert.deepEqual(way?.props.options, [
-    { value: 'sdd', label: 'SDD skill' },
-    { value: 'workflow', label: '/conport:epic' }
-  ])
+  // The SDD skill is the only way an epic is done: there is no switch to choose another.
+  assert.equal(view.find({ label: 'Mode' }), null)
+  assert.deepEqual(view.findAll({ type: 'RadioGroup' }), [])
+  assert.equal(view.find({ testId: 'way-needs-claude' }), null)
   // The harnesses that take a task as their first argument, as found on this machine: Gemini is not one.
   const harness = view.find({ label: 'Harness' })
   assert.equal(harness?.props.value, 'claude')
@@ -623,13 +619,14 @@ test('the epic screen offers the way, the harness and four roles with the defaul
   assert.equal(view.find({ testId: 'fixer-note' })?.text, 'Fixes: the same implementer, otherwise conport:sdd-fixer')
   assert.equal(view.find({ testId: 'type-missing:implementer' }), null)
   assert.equal(startOf(view)?.props.disabled, false)
-  // Top to bottom: the way, the harness, the roles, the start, the tasks.
+  // Top to bottom: the harness, the roles, the start, the tasks.
   const drawn = textOf(view)
-  const places = ['"Mode"', '"Harness"', '"Implementer"', '"Reviewer"', '"Gap hunter"', '"Final reviewer"', 'Fixes: the same implementer', '"Start"', 'Epic tasks'].map((s) => drawn.indexOf(s))
+  const places = ['"Harness"', '"Implementer"', '"Reviewer"', '"Gap hunter"', '"Final reviewer"', 'Fixes: the same implementer', '"Start"', 'Epic tasks'].map((s) => drawn.indexOf(s))
   assert.equal(places.includes(-1), false, JSON.stringify(places))
   assert.deepEqual(places, [...places].sort((a, b) => a - b))
-  // The words of the dispatcher are gone.
+  // The words of the dispatcher and of the removed mode are gone.
   doesNotMatch(drawn, /Checker|Final check|Command|remembered for the project/)
+  doesNotMatch(drawn, /\bMode\b|[Ww]orkflow|SDD skill/)
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.warnings, [])
 })
@@ -653,18 +650,15 @@ test('the choice of one epic does not change the choice of another', async () =>
   const { host, calls } = stub({})
   view = await mount(panel, { host, persisted: at(15) })
   await view.select({ label: 'Implementer' }, 'sdd-task-reviewer')
-  await view.select({ label: 'Mode' }, 'workflow')
   await view.press({ text: '← Epics' })
   await view.press({ testId: 'epic:7' })
-  assert.equal(view.find({ label: 'Mode' })?.props.value, 'sdd')
+  assert.equal(view.find({ label: 'Harness' })?.props.value, 'claude')
   assert.deepEqual(typesOf(view), DEFAULT_TYPES)
   await view.select({ label: 'Harness' }, 'codex')
   // Back in the first epic its own choice stands, though nothing was started.
   await view.press({ text: '← Epics' })
   await view.press({ testId: 'epic:15' })
-  assert.equal(view.find({ label: 'Mode' })?.props.value, 'workflow')
   assert.equal(view.find({ label: 'Harness' })?.props.value, 'claude')
-  await view.select({ label: 'Mode' }, 'sdd')
   assert.deepEqual(typesOf(view), ['sdd-task-reviewer', ...DEFAULT_TYPES.slice(1)])
   // A choice not sent by a start is the panel's own: nothing was asked to keep it.
   assert.deepEqual([...new Set(calls.map((c) => c.name))].sort(), ['agents.get', 'epic.session', 'epic.tasks', 'epics.list', 'projects.list', 'subagents.get', 'tasks.list'])
@@ -749,24 +743,6 @@ test('the role lists are off for Codex and Cursor', async () => {
   // Claude Code has them: the lists work and no reason is given.
   const { host } = stub({})
   view = await mount(panel, { host, persisted: at(15) })
-  assert.deepEqual(listsOff(view), [false, false, false, false])
-  assert.equal(view.find({ testId: 'roles-note' }), null)
-})
-
-test('the role lists are off by the workflow, and the line under the switch says what the workflow does', async () => {
-  const { host } = stub({})
-  view = await mount(panel, { host, persisted: at(15) })
-  assert.equal(view.find({ testId: 'workflow-note' }), null)
-  await view.select({ label: 'Mode' }, 'workflow')
-  assert.equal(
-    view.find({ testId: 'workflow-note' })?.text,
-    'The workflow works in the repository root on the main branch: it starts with its own checks, merges the tasks into the main branch and closes the epic itself'
-  )
-  assert.deepEqual(listsOff(view), [true, true, true, true])
-  assert.equal(view.find({ testId: 'roles-note' })?.text, 'The workflow has its subagent types built in')
-  assert.equal(view.find({ testId: 'roles-action' }), null)
-  await view.select({ label: 'Mode' }, 'sdd')
-  assert.equal(view.find({ testId: 'workflow-note' }), null)
   assert.deepEqual(listsOff(view), [false, false, false, false])
   assert.equal(view.find({ testId: 'roles-note' }), null)
 })
@@ -875,7 +851,7 @@ test('a session that cannot be read says why in place of the choice, keeps the t
     // Nothing is chosen and nothing starts on a session not known.
     assert.equal(startOf(view), null, code)
     assert.equal(view.find({ text: 'Show terminal' }), null, code)
-    assert.equal(view.find({ label: 'Mode' }), null, code)
+    assert.equal(view.find({ label: 'Harness' }), null, code)
     assert.deepEqual(inputsOf(calls, 'subagents.get'), [], code)
     // The tasks are ConPort's and are drawn all the same.
     assert.equal(headingOf(view, 3), 'Tasks · 6', code)
@@ -884,66 +860,49 @@ test('a session that cannot be read says why in place of the choice, keeps the t
     await view.press({ label: 'Refresh' })
     assert.equal(view.findAll({ type: 'Callout' }).some((c) => c.props.tone === 'danger'), false, code)
     assert.equal(startOf(view)?.props.disabled, false, code)
-    assert.ok(view.find({ label: 'Mode' }), code)
+    assert.ok(view.find({ label: 'Harness' }), code)
     await view.unmount()
     view = undefined
   }
 })
 
-test('the workflow with a harness other than Claude Code cannot start and says what to do', async () => {
-  const { host, calls } = stub({ 'epic.session': () => ok(session({ way: 'workflow', harness: 'codex' })), 'epic.start': () => started('workflow') })
-  view = await mount(panel, { host, persisted: at(15) })
-  assert.equal(startOf(view)?.props.disabled, true)
-  assert.equal(
-    view.find({ testId: 'way-needs-claude' })?.text,
-    'The /conport:epic mode is only in Claude Code with the conport plugin — choose the Claude Code harness.'
-  )
-  // By the SDD skill the same harness starts.
-  await view.select({ label: 'Mode' }, 'sdd')
-  assert.equal(startOf(view)?.props.disabled, false)
-  assert.equal(view.find({ testId: 'way-needs-claude' }), null)
-  // And the workflow starts with Claude Code.
-  await view.select({ label: 'Mode' }, 'workflow')
-  assert.equal(startOf(view)?.props.disabled, true)
-  await view.select({ label: 'Harness' }, 'claude')
-  assert.equal(startOf(view)?.props.disabled, false)
-  assert.equal(view.find({ testId: 'way-needs-claude' }), null)
-  await view.press({ text: 'Start' })
-  assert.deepEqual((inputsOf(calls, 'epic.start') as Array<{ way: string; harness: string }>).map(({ way, harness }) => ({ way, harness })), [{ way: 'workflow', harness: 'claude' }])
-})
-
-test('start sends the way, the harness and the roles and says where the agent is, for each way', async () => {
-  const cases = [
-    ['sdd', 'The agent of epic 15 is open in the terminal of working copy epic-15; it asks its questions there'],
-    ['workflow', 'The agent of epic 15 is open in a terminal at the repository root; it asks its questions there']
-  ] as const
-  for (const [way, said] of cases) {
-    // The session is read anew after the start; here the agent is not yet seen in its terminal.
-    const { host, calls } = stub({ 'epic.start': () => started(way) })
+test('every harness that takes a task starts the epic by the SDD skill', async () => {
+  for (const harness of ['codex', 'cursor']) {
+    const { host, calls } = stub({ 'agents.get': () => ok(WITH_CURSOR), 'epic.session': () => ok(session({ harness })), 'epic.start': () => started() })
     view = await mount(panel, { host, persisted: at(15) })
-    if (way === 'workflow') await view.select({ label: 'Mode' }, 'workflow')
-    else await view.select({ label: 'Reviewer' }, 'sdd-task-reviewer')
+    // No harness is held back for a mode: there is none.
+    assert.equal(startOf(view)?.props.disabled, false, harness)
+    assert.equal(view.find({ testId: 'way-needs-claude' }), null, harness)
     await view.press({ text: 'Start' })
-    assert.deepEqual(inputsOf(calls, 'epic.start'), [
-      {
-        ...EPIC,
-        way,
-        harness: 'claude',
-        roles: {
-          implementer: DEFAULT_TYPES[0],
-          reviewer: way === 'sdd' ? 'sdd-task-reviewer' : DEFAULT_TYPES[1],
-          gapHunter: DEFAULT_TYPES[2],
-          finalReviewer: DEFAULT_TYPES[3]
-        }
-      }
-    ])
-    assert.equal(noticeOf(view), said, way)
-    doesNotMatch(textOf(view), /Agents are starting|the reason will be there/)
-    // The screen read the session and the tasks again, and the types of the harness not again.
-    assert.deepEqual(['epic.session', 'epic.tasks', 'subagents.get'].map((name) => inputsOf(calls, name).length), [2, 2, 1], way)
+    const roles = { implementer: DEFAULT_TYPES[0], reviewer: DEFAULT_TYPES[1], gapHunter: DEFAULT_TYPES[2], finalReviewer: DEFAULT_TYPES[3] }
+    assert.deepEqual(inputsOf(calls, 'epic.start'), [{ ...EPIC, harness, roles }], harness)
     await view.unmount()
     view = undefined
   }
+})
+
+test('start sends the harness and the roles, no way, and says where the agent is', async () => {
+  // The session is read anew after the start; here the agent is not yet seen in its terminal.
+  const { host, calls } = stub({ 'epic.start': () => started() })
+  view = await mount(panel, { host, persisted: at(15) })
+  await view.select({ label: 'Reviewer' }, 'sdd-task-reviewer')
+  await view.press({ text: 'Start' })
+  assert.deepEqual(inputsOf(calls, 'epic.start'), [
+    {
+      ...EPIC,
+      harness: 'claude',
+      roles: {
+        implementer: DEFAULT_TYPES[0],
+        reviewer: 'sdd-task-reviewer',
+        gapHunter: DEFAULT_TYPES[2],
+        finalReviewer: DEFAULT_TYPES[3]
+      }
+    }
+  ])
+  assert.equal(noticeOf(view), 'The agent of epic 15 is open in the terminal of working copy epic-15; it asks its questions there')
+  doesNotMatch(textOf(view), /Agents are starting|the reason will be there/)
+  // The screen read the session and the tasks again, and the types of the harness not again.
+  assert.deepEqual(['epic.session', 'epic.tasks', 'subagents.get'].map((name) => inputsOf(calls, name).length), [2, 2, 1])
 })
 
 test('a started epic whose agent is not seen yet offers no second start until the session is read again', async () => {
@@ -974,24 +933,9 @@ test('a started epic whose agent is not seen yet offers no second start until th
   assert.equal(view.find({ testId: 'start-note' })?.text, WAITS)
   await view.press({ label: 'Refresh' })
   assert.equal(view.find({ testId: 'start-note' })?.text, 'The working copy is already there: the agent resumes where the work stopped')
-  // Nor are the branches of the workflow it has just begun.
   await view.unmount()
-  made = false
-  const branched = stub({
-    'epic.session': () => ok(made ? SESSION_WORKFLOW : session({ way: 'workflow' })),
-    'epic.start': () => {
-      made = true
-      return started('workflow')
-    }
-  })
-  view = await mount(panel, { host: branched.host, persisted: at(15) })
-  await view.press({ text: 'Start' })
-  assert.equal(view.find({ testId: 'start-note' })?.text, WAITS)
-  await view.press({ label: 'Refresh' })
-  assert.equal(view.find({ testId: 'start-note' })?.text, 'The workflow picks up the branches from the earlier start')
   // A refused start leaves the button to try again.
   const refusing = stub({ 'epic.start': () => refused('root_not_open', 'The repository root /repo is not open in Orca', 'Add the repository to Orca.') })
-  await view.unmount()
   view = await mount(panel, { host: refusing.host, persisted: at(15) })
   await view.press({ text: 'Start' })
   assert.equal(startOf(view)?.props.disabled, false)
@@ -1015,9 +959,6 @@ test('no working copy offers start; a working copy without a session offers star
   assert.equal(startOf(view)?.props.disabled, false)
   assert.equal(view.find({ testId: 'start-note' })?.text, COPY)
   assert.equal(view.find({ text: 'Show terminal' }), null)
-  // The note is of the SDD skill: the workflow makes no use of that working copy.
-  await view.select({ label: 'Mode' }, 'workflow')
-  assert.equal(view.find({ testId: 'start-note' }), null)
 })
 
 test('a live session offers its terminal and a second start only after a yes', async () => {
@@ -1034,14 +975,15 @@ test('a live session offers its terminal and a second start only after a yes', a
   assert.deepEqual(inputsOf(calls, 'epic.start'), [])
   await view.press({ text: 'Start again' })
   await view.press({ text: 'Yes, start' })
-  assert.deepEqual((inputsOf(calls, 'epic.start') as Array<{ epic: number; way: string }>).map(({ epic, way }) => ({ epic, way })), [{ epic: 7, way: 'sdd' }])
+  assert.deepEqual((inputsOf(calls, 'epic.start') as Array<{ epic: number }>).map(({ epic }) => epic), [7])
   assert.equal(view.find({ testId: 'confirm-again' }), null)
-  // The session of the workflow lives in the root of the repository.
+  // A session a start by an earlier release of the panel left in the root of the repository: no working copy.
   await view.unmount()
-  const flow = stub({ 'epic.session': () => ok({ ...SESSION_WORKFLOW, alive: true, terminal: 'term-root' }) })
-  view = await mount(panel, { host: flow.host, persisted: at(7) })
+  const old = stub({ 'epic.session': () => ok(session({ alive: true, terminal: 'term-root' })) })
+  view = await mount(panel, { host: old.host, persisted: at(7) })
   assert.equal(aliveOf(view), 'The agent of epic 7 is open in a terminal at the repository root; it asks its questions there')
   assert.equal(startOf(view), null)
+  assert.ok(view.find({ text: 'Show terminal' }))
   assert.ok(view.find({ text: 'Start again' }))
 })
 
@@ -1061,22 +1003,6 @@ test('show the terminal asks the worker to switch', async () => {
   const box = view.findAll({ type: 'Callout' }).find((c) => c.props.tone === 'danger')
   assert.equal(box?.props.title, 'Epic 7 has no live session: its terminal is closed or its agent has exited')
   assert.ok(box?.text.includes('Press Refresh.'), box?.text)
-})
-
-test('by the workflow branches of an earlier run are noted', async () => {
-  const BRANCHES = 'The workflow picks up the branches from the earlier start'
-  const flow = stub({ 'epic.session': () => ok(SESSION_WORKFLOW) })
-  view = await mount(panel, { host: flow.host, persisted: at(7) })
-  assert.equal(startOf(view)?.props.disabled, false)
-  assert.equal(view.find({ testId: 'start-note' })?.text, BRANCHES)
-  // Chosen the SDD skill instead, the branches are not the workflow's to take up.
-  await view.select({ label: 'Mode' }, 'sdd')
-  assert.equal(view.find({ testId: 'start-note' }), null)
-  await view.unmount()
-  const none = stub({ 'epic.session': () => ok(session({ way: 'workflow' })) })
-  view = await mount(panel, { host: none.host, persisted: at(7) })
-  assert.equal(startOf(view)?.props.disabled, false)
-  assert.equal(view.find({ testId: 'start-note' }), null)
 })
 
 test('the tasks of an epic are counted by status, parked only when there are some, cancelled outside the counts and last', async () => {
@@ -1168,11 +1094,11 @@ test('the notice goes on refresh, on leaving the epic, on another tab, on anothe
 })
 
 test('the epic screen has no stop and no continue and asks for no run', async () => {
-  const sessions = [session(), SESSION_COPY, SESSION_ALIVE, SESSION_WORKFLOW, session({ way: 'workflow', harness: 'codex' })]
+  const sessions = [session(), SESSION_COPY, SESSION_ALIVE, session({ harness: 'codex' })]
   for (const state of sessions) {
     const { host, calls } = stub({ 'epic.session': () => ok(state) })
     view = await mount(panel, { host, persisted: at(7) })
-    assert.ok(view.find({ label: 'Mode' }))
+    assert.ok(view.find({ label: 'Harness' }))
     doesNotMatch(textOf(view), /Stop agents|Resume|The epic is held|Agents stopped|The epic waits for your answer|epic answer|epic status|epic run/)
     assert.equal(noRun(calls), true)
     assert.deepEqual(view.errors, [])
@@ -1202,6 +1128,36 @@ test('a missing api key shows the cli refusal in the panel', async () => {
 const UNKNOWN_WHAT = 'A program refused for a reason the panel does not know'
 const UNKNOWN_ACTION = 'Press Refresh; if the refusal repeats, update the plugin and Orca.'
 
+test('the worker words these refusals itself, and no other', () => {
+  // The whole list: a code taken out of it, or one a removed start left in it, shows here.
+  assert.deepEqual([...text.OWN_REFUSALS].sort(), [
+    'agent_cannot_prepare',
+    'agent_not_found',
+    'bad_output',
+    'empty_project',
+    'epic_branch_taken',
+    'epic_not_found',
+    'epic_not_preparable',
+    'epic_not_ready',
+    'epic_ready',
+    'git_failed',
+    'harness_invalid',
+    'no_repository',
+    'no_workspace',
+    'project_not_handle',
+    'role_invalid',
+    'root_detached',
+    'root_not_open',
+    'session_gone',
+    'task_moved',
+    'task_not_found',
+    'terminals_truncated',
+    'worker',
+    'workspace_ambiguous',
+    'workspaces_truncated'
+  ])
+})
+
 test('every refused action says the panel words: the cli by its code, the worker in its own words', async () => {
   const own = (code: string, message: string, action: string): [{ code: string; message: string; action: string }, string, string] => [{ code, message, action }, message, action]
   const refusals: Array<[{ code: string; message: string; action: string }, string, string]> = [
@@ -1224,11 +1180,8 @@ test('every refused action says the panel words: the cli by its code, the worker
     // The worker's own refusals are in the panel's words already: shown as they are.
     own('root_not_open', 'The repository root /repo is not open in Orca', 'Add the repository to Orca.'),
     own('epic_not_ready', 'Epic 15 has no spec or no plan', 'Prepare the epic in the Prepare tab.'),
-    own('way_needs_claude', 'The /conport:epic mode is only in Claude Code with the conport plugin', 'Choose the Claude Code harness.'),
     own('role_invalid', 'The subagent type is not a plain name', 'Choose a type for the role from the list.'),
     own('root_detached', "The repository's main working copy is not on a branch, so the epic has no base", 'Check out a branch in the main working copy.'),
-    own('epic_started_sdd', 'The workflow is chosen, but the branch epic-15 is there already: the epic was started by the SDD skill', 'Choose the SDD skill mode.'),
-    own('epic_started_workflow', 'The SDD skill is chosen, but branches epic15/… are there already: the epic was started by the workflow', 'Choose the /conport:epic mode.'),
     own('epic_branch_taken', 'The branch epic-15 is there, but it has no working copy', 'Open the branch as a workspace in Orca.'),
     own('project_not_handle', 'The project is named by its name, not by its handle', 'Press Refresh.'),
     own('session_gone', 'Epic 15 has no live session', 'Press Refresh.'),
@@ -1669,9 +1622,9 @@ test('no panel text is in russian', async () => {
   }
   // Nor does any screen drawn: each tab, the epic in each state of its session, the sheet.
   const screens: string[] = []
-  const sessions = [session(), SESSION_COPY, SESSION_ALIVE, SESSION_WORKFLOW, session({ way: 'workflow', harness: 'codex' }), session({ harness: 'codex' })]
+  const sessions = [session(), SESSION_COPY, SESSION_ALIVE, session({ harness: 'codex' })]
   for (const state of sessions) {
-    const { host } = stub({ 'epic.session': () => ok(state), 'epic.start': () => started(state.way) })
+    const { host } = stub({ 'epic.session': () => ok(state), 'epic.start': () => started() })
     view = await mount(panel, { host, persisted: at(7) })
     screens.push(textOf(view))
     if (view.find({ text: 'Start again' })) {

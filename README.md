@@ -44,12 +44,9 @@ The panel shows:
      and its worktree, fixes what the latest review found, commits and writes its fix to the
      journal (`journal add --kind fix`), which sends the task to review again;
 3. the screen of an epic: its milestone, its spec and plan, and where it stands. Its session and
-   its tasks are read once when the epic is opened, and again on **Refresh**. On it you choose:
-   - **the mode** the epic is done in: **SDD skill** — the harness leads the epic in a working copy of
-     its own on the branch `epic-<N>`, up to the branch being ready to merge — or
-     **`/conport:epic`**, the workflow of the conport plugin, which works in the root of the
-     repository on its main branch, starts with its own checks, merges the tasks into that
-     branch and closes the epic itself. The workflow is there for Claude Code only;
+   its tasks are read once when the epic is opened, and again on **Refresh**. An epic is done by
+   the SDD skill: the harness leads it in a working copy of its own on the branch `epic-<N>`, up
+   to the branch being ready to merge. On the screen you choose:
    - **the harness**: Claude Code, Codex or Cursor, of those found on this machine. A new epic
      takes the harness of the last start in the project, Claude Code without one;
    - **the roles**: the subagent type of the harness for each of the four — implementer,
@@ -57,24 +54,22 @@ The panel shows:
      (`conport:sdd-implementer`, `conport:sdd-task-reviewer`, `conport:sdd-gap-hunter`,
      `conport:sdd-final-reviewer`). A fix round goes to the same implementer, otherwise to
      `conport:sdd-fixer`, which is not chosen. Changing the harness puts the roles back to these.
-     The lists are off, each with its reason, when the subagents cannot be listed, for Codex and
-     Cursor (they have no subagents with types: the roles follow the texts of
-     `conport agent <role>`) and for the workflow (its types are fixed in it). A type the
-     harness does not list stays chosen with a note to install or update the conport plugin.
+     The lists are off, each with its reason, when the subagents cannot be listed, and for Codex
+     and Cursor (they have no subagents with types: the roles follow the texts of
+     `conport agent <role>`). A type the harness does not list stays chosen with a note to
+     install or update the conport plugin.
 
-   The mode, the harness and the roles are kept for the epic once it is started; a choice not
-   started lives until the panel is closed.
+   The harness and the roles are kept for the epic once it is started; a choice not started
+   lives until the panel is closed.
 
    The button follows the session of the epic, which the panel asks Orca for:
-   - no working copy of `epic-<N>` yet: **Start**. By the SDD skill it creates the working copy
-     from the branch checked out in the main working tree of the repository and opens the
-     harness there in a terminal `conport epic <N> · SDD`; by the workflow it opens the harness
-     in the root of the repository, in a terminal `conport epic <N> · workflow`. The harness
-     gets the task of the epic as its one argument, and the terminal comes to the front. A
-     start checks nothing of the plan or of the working tree, takes no lock and writes no file;
+   - no working copy of `epic-<N>` yet: **Start**. It creates the working copy from the branch
+     checked out in the main working tree of the repository and opens the harness there in a
+     terminal `conport epic <N> · SDD`. The harness gets the task of the epic as its one
+     argument, and the terminal comes to the front. A start checks nothing of the plan or of the
+     working tree, takes no lock and writes no file;
    - the working copy is there and no agent works in it: **Start**, with a note that the agent
-     goes on from where the work stood. By the workflow, when branches `epic<N>/…` of an earlier
-     start are there, the note says the workflow picks them up;
+     goes on from where the work stood;
    - the session is live: **Show terminal**, and **Start again**, which asks first — it
      opens one more agent with the same task and leaves the first terminal open.
 
@@ -92,7 +87,7 @@ the API key is never in one.
 
 ## Install
 
-Before installing, make sure of five things:
+Before installing, make sure of six things:
 
 - **Orca 1.4.251 or later** with plugins turned on (Settings → Plugins → "Turn on plugins").
 - **Node.js 18 or later with `npx`, and the `orca` CLI, on the PATH Orca's app sees.** The
@@ -107,11 +102,14 @@ Before installing, make sure of five things:
   ```
 
   The CLI reads this file itself, so the key never passes through the plugin or Orca.
-- **For an epic done by the SDD skill in Claude Code: the superpowers plugin, and the conport
-  plugin of version 20 or later, both installed in Claude Code.** The lead session works by the
-  skill `superpowers:subagent-driven-development` and by the conport skill, and starts each role
-  as a subagent type of the conport plugin. The workflow `/conport:epic` needs the conport plugin
-  alone; Codex and Cursor need neither, they work by the role texts of the CLI.
+- **For an epic in Claude Code: the superpowers plugin, and the conport plugin of version 20 or
+  later, both installed in Claude Code.** The lead session works by the skill
+  `superpowers:subagent-driven-development` and by the conport skill, and starts each role as a
+  subagent type of the conport plugin. Codex and Cursor need neither, they work by the role texts
+  of the CLI.
+- **The releases that go together:** update Orca's conport plugin to 0.8.0 and the Herdr mod to
+  0.3.0 together with the conport plugin 25: earlier releases of this plugin offer a mode the
+  conport plugin 25 no longer has.
 
 Then, in Orca:
 
@@ -148,16 +146,15 @@ Orca asks you to approve: reading your workspaces and agents, creating terminals
 them, and its own storage. Besides that, its worker runs the `conport` CLI (through `npx`), the
 `orca` CLI and `git` as child processes with your account. Through `orca` it creates the working
 copy of an epic, opens the terminal of its harness there and brings a terminal it opened to the
-front, which the approved rights alone would not allow; of `git` it only asks which branches of
-an epic are there. It reads only when the panel asks: no timer, no status bar item, no
+front, which the approved rights alone would not allow; of `git` it only asks whether the branch
+`epic-<N>` of an epic is there. It reads only when the panel asks: no timer, no status bar item, no
 notification.
 
 ## Permissions of the agents
 
 The panel does not choose how agents ask for permission: that comes from Orca's and the agents' own
-settings. By the SDD skill they work in the branch of the epic, and you merge it into the main
-branch; the workflow merges its tasks into the main branch itself, and pushing it is yours. An
-agent that asks before every command stops the work on the epic until someone answers it in its
+settings. They work in the branch of the epic, and you merge it into the main branch. An agent
+that asks before every command stops the work on the epic until someone answers it in its
 terminal.
 
 ## Develop

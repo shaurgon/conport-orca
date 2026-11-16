@@ -1,7 +1,7 @@
 // The sidebar panel: control of a ConPort project from Orca. The chosen project's epics in three
 // tabs — those to start, those to prepare, the tasks outside the epics — and the screen of an
-// epic, where the way it is done, its harness and the subagent type of each role are chosen and
-// its agent is started. The state of the agent is Orca's: the panel reads the session and the
+// epic, where its harness and the subagent type of each role are chosen and its agent is started
+// by the SDD skill. The state of the agent is Orca's: the panel reads the session and the
 // tasks of an epic only when the epic is opened and on refresh. Every CLI call goes through the
 // plugin's worker (src/worker.ts).
 import {
@@ -49,14 +49,12 @@ import type {
   RepoContext,
   Result,
   Roles,
-  SubagentList,
-  Way
+  SubagentList
 } from './protocol'
 import {
   AGENT_MISSING_ACTION,
   BIND_PROJECT,
   BIND_PROJECT_NO_FILES,
-  BRANCHES_NOTE,
   BUG_LABEL,
   COPY_NOTE,
   epicState,
@@ -74,10 +72,10 @@ import {
   releaseLine,
   RESTART_NOTE,
   ROLE_TITLES,
-  ROLES_FIXED_NOTE,
   ROLES_NO_HARNESS_NOTE,
   ROLES_UNTYPED_NOTE,
   rolesUnavailableNote,
+  rootSessionNotice,
   SETTINGS_BROKEN,
   SHEET_STEPS,
   STARTED_NOTE,
@@ -86,10 +84,7 @@ import {
   taskCounts,
   taskCountsLine,
   taskState,
-  TYPE_MISSING_NOTE,
-  WAY_LABELS,
-  WAY_NEEDS_CLAUDE,
-  WORKFLOW_NOTE
+  TYPE_MISSING_NOTE
 } from './text'
 
 /** `npx` may fetch the CLI on its first call. */
@@ -100,9 +95,8 @@ const TAB_NAMES: readonly string[] = ['launch', 'prepare', 'tasks']
 
 type AgentsAnswer = { agents: AgentKind[]; preparer?: string | null }
 
-/** What is chosen for an epic on its screen: the way, the harness and the subagent type of each role. */
+/** What is chosen for an epic on its screen: the harness and the subagent type of each role. */
 interface Choice {
-  way: Way
   harness: string
   roles: Roles
 }
@@ -239,7 +233,7 @@ function choiceOf(): Choice | null {
   const own = read(choices)[epicKey(root, epic.id)]
   if (own !== undefined) return own
   const state = read(session)
-  return state?.ok ? { way: state.data.way, harness: state.data.harness, roles: state.data.roles } : null
+  return state?.ok ? { harness: state.data.harness, roles: state.data.roles } : null
 }
 
 /** Changes the choice of the open epic; the choice of every other epic stays. */
@@ -446,7 +440,6 @@ type RoleLists = { on: true; types: string[]; roles: Roles } | { on: false; note
 
 /** The role lists of a choice; null while the subagent types of its harness are being read. */
 function roleLists(choice: Choice): RoleLists | null {
-  if (choice.way === 'workflow') return { on: false, note: ROLES_FIXED_NOTE, roles: choice.roles }
   const kinds = read(agents)
   if (kinds === null) return null
   // The agents could not be read: that refusal is told where the harness is chosen, and no harness is known missing.
@@ -472,11 +465,11 @@ async function start(): Promise<void> {
   const key = epicKey(target.root, target.epic)
   let opened = false
   await act(
-    () => plugin.request('epic.start', { ...target, way: choice.way, harness: choice.harness, roles: lists.roles }, SLOW),
+    () => plugin.request('epic.start', { ...target, harness: choice.harness, roles: lists.roles }, SLOW),
     () => {
       opened = true
       set(started, key)
-      set(notice, startNotice(target.epic, choice.way))
+      set(notice, startNotice(target.epic))
       // The start remembered the choice: the panel keeps none of its own from now on.
       const { [key]: _sent, ...others } = read(choices)
       set(choices, others)
@@ -1050,28 +1043,6 @@ function SheetCard({ open }: { open: Sheet }) {
   )
 }
 
-const WAYS: readonly Way[] = ['sdd', 'workflow']
-
-/** How the epic is done; under the switch, what the workflow does on its own. */
-function WayPart({ choice }: { choice: Choice }) {
-  return (
-    <Stack gap="xs">
-      <RadioGroup
-        label="Mode"
-        orientation="horizontal"
-        options={WAYS.map((way) => ({ value: way, label: WAY_LABELS[way] }))}
-        value={choice.way}
-        onChange={(value) => choose({ way: value === 'workflow' ? 'workflow' : 'sdd' })}
-      />
-      {choice.way === 'workflow' ? (
-        <Text key="workflow-note" size="xs" muted>
-          {WORKFLOW_NOTE}
-        </Text>
-      ) : null}
-    </Stack>
-  )
-}
-
 /** Whether the harness is one that takes a task and is found on this machine. */
 const harnessFound = (list: AgentKind[], harness: string): boolean => taskAgents(list).some((a) => a.id === harness)
 
@@ -1161,18 +1132,12 @@ function RolesPart({ choice }: { choice: Choice }) {
 
 /** The start of the open epic by what Orca sees of its session: start, or its terminal and a second start. */
 function StartPart({ epic, state, choice }: { epic: number; state: EpicSession; choice: Choice }) {
-  const needsClaude = choice.way === 'workflow' && choice.harness !== 'claude'
-  const blocked = read(busy) || !canStart(choice.harness) || needsClaude || roleLists(choice) === null
-  const needs = needsClaude ? (
-    <Text key="way-needs-claude" size="xs" muted>
-      {oneLine(WAY_NEEDS_CLAUDE)}
-    </Text>
-  ) : null
+  const blocked = read(busy) || !canStart(choice.harness) || roleLists(choice) === null
   if (state.alive) {
     return (
       <Stack gap="sm">
         <Callout key="session-alive" tone="accent" icon="terminal">
-          {startNotice(epic, state.way)}
+          {state.worktree === null ? rootSessionNotice(epic) : startNotice(epic)}
         </Callout>
         <Row gap="xs" wrap>
           <Button variant="solid" tone="accent" icon="terminal" disabled={read(busy)} onPress={showTerminal}>
@@ -1182,7 +1147,6 @@ function StartPart({ epic, state, choice }: { epic: number; state: EpicSession; 
             Start again
           </Button>
         </Row>
-        {needs}
         {read(confirmAgain) ? (
           <Callout key="confirm-again" tone="warning" title={`Start epic ${epic} again?`}>
             <Stack gap="xs">
@@ -1203,15 +1167,14 @@ function StartPart({ epic, state, choice }: { epic: number; state: EpicSession; 
   }
   // Started, and the agent is not yet seen in its terminal: the button waits, and says for what.
   const waits = read(started) === epicKey(read(chosen) ?? '', epic)
-  const earlier = choice.way === 'sdd' ? (state.worktree === null ? null : COPY_NOTE) : state.workflowBranches ? BRANCHES_NOTE : null
-  // The working copy and the branches this very start made are no earlier work to take up.
+  const earlier = state.worktree === null ? null : COPY_NOTE
+  // The working copy this very start made is no earlier work to take up.
   const note = waits ? STARTED_NOTE : earlier
   return (
     <Stack gap="sm">
       <Button variant="solid" tone="accent" icon="play" disabled={blocked || waits} onPress={start}>
         Start
       </Button>
-      {needs}
       {note === null ? null : (
         <Text key="start-note" size="xs" muted>
           {note}
@@ -1230,7 +1193,6 @@ function SessionPart({ epic }: { epic: number }) {
   if (choice === null) return null
   return (
     <Stack gap="lg">
-      <WayPart choice={choice} />
       <HarnessPart choice={choice} />
       <RolesPart choice={choice} />
       <StartPart epic={epic} state={state.data} choice={choice} />
