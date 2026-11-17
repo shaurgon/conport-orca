@@ -4,18 +4,18 @@ import { defineCheck } from 'orca/testing'
 import {
   AGENTS,
   CURSOR,
-  EMPTY_LIST,
-  EPIC_LIST,
+  EMPTY_SDD,
   EPIC_TASKS,
-  EPIC_WITHOUT_PLAN,
+  HANDLE,
+  SDD_LIST,
   session,
   SESSION_ALIVE,
   SESSION_COPY,
   SUBAGENTS,
-  TASK_LIST,
+  TAKEN,
   untyped
 } from '../test/fixtures'
-import type { EpicList, EpicSession, OrcaProject, Result } from './protocol'
+import type { EpicSession, IdeaRow, OrcaProject, Result, RowTarget, SddList } from './protocol'
 
 const ok = <T>(data: T): Result<T> => ({ ok: true, data })
 const ROOT = '/work/shop'
@@ -35,44 +35,62 @@ const NO_SUBAGENTS: Result<never> = {
   }
 }
 
+const idea = (id: number): IdeaRow => SDD_LIST.ideas.find((row) => row.id === id) as IdeaRow
+const [proposal] = SDD_LIST.proposals
+const [specDoc] = SDD_LIST.specs
+
 interface Shown {
-  tab?: string
   epic?: number | null
   /** What `epic.session` answers for the open epic. */
   state?: EpicSession
   /** The subagent types cannot be read. */
   noSubagents?: boolean
+  /** The rows whose live terminal this host has, by their kind and number. */
+  terminals?: string[]
+  /** What else the panel remembered: the folded sections, an open sheet, a Take over asked. */
+  plugin?: Record<string, unknown>
 }
 
-/** The panel over `list`, on `tab`, with `epic` open and its session `state`. */
-function scenario(list: EpicList, { tab = 'launch', epic = null, state = session(), noSubagents = false }: Shown = {}) {
+/** The panel over `list` with `epic` open and its session `state`. */
+function scenario(list: SddList, { epic = null, state = session(), noSubagents = false, terminals = [], plugin = {} }: Shown = {}) {
   return {
     requests: {
       'projects.list': () => ok(PROJECTS),
-      'epics.list': () => ok(list),
-      'tasks.list': () => ok(TASK_LIST.tasks),
-      'agents.get': () => ok({ agents: [...AGENTS.agents, CURSOR], preparer: 'claude' }),
+      'sdd.list': () => ok(list),
+      'sdd.taken': () => ok(TAKEN),
+      'agents.get': () => ok({ agents: [...AGENTS.agents, CURSOR], launcher: 'claude' }),
+      'project.page': () => ok({ url: `https://me.conport.app/t/pers/p/${HANDLE}` }),
+      'row.session': ({ row }: RowTarget) => {
+        const name = row.kind === 'spec' ? `spec:${row.doc}` : `${row.kind}:${row.id}`
+        return ok({ terminal: terminals.includes(name) ? `term-${name}` : null })
+      },
       'epic.session': () => ok(state),
       'epic.tasks': () => ok(EPIC_TASKS),
       'subagents.get': ({ harness }: { harness: string }) =>
         noSubagents ? NO_SUBAGENTS : ok(harness === 'claude' ? SUBAGENTS : untyped(harness))
     },
-    persisted: { plugin: { tab, epics: epic === null ? {} : { [ROOT]: epic } } }
+    persisted: { plugin: { ...(epic === null ? {} : { epics: { [ROOT]: epic } }), ...plugin } }
   }
 }
 
 export default defineCheck({
-  'empty-project': scenario(EMPTY_LIST),
-  'epics': scenario(EPIC_LIST),
-  'prepare': scenario(EPIC_LIST, { tab: 'prepare' }),
-  'epic-without-plan': scenario(EPIC_WITHOUT_PLAN, { tab: 'prepare' }),
-  'tasks': scenario(EPIC_LIST, { tab: 'tasks' }),
-  'epic-new': scenario(EPIC_LIST, { epic: 15 }),
-  'epic-copy-no-session': scenario(EPIC_LIST, { epic: 7, state: SESSION_COPY }),
-  'epic-session-alive': scenario(EPIC_LIST, { epic: 7, state: SESSION_ALIVE }),
-  'epic-roles-unavailable': scenario(EPIC_LIST, { epic: 15, noSubagents: true }),
+  'empty-project': scenario(EMPTY_SDD),
+  // The four sections, Outside SDD folded; the epic and the idea another session took.
+  'sections': scenario(SDD_LIST),
+  'outside-open': scenario(SDD_LIST, { plugin: { sections: { outside: false, specs: true } } }),
+  // A taken idea whose terminal this host opened shows it; the taken epic offers Take over.
+  'taken': scenario(SDD_LIST, { terminals: ['idea:43', 'spec:30'] }),
+  'brainstorm': scenario(SDD_LIST, { plugin: { sheet: { root: ROOT, sheet: { kind: 'idea', idea: idea(41) } } } }),
+  'plan-build': scenario(SDD_LIST, { plugin: { sheet: { root: ROOT, sheet: { kind: 'spec', spec: specDoc } } } }),
+  'decline': scenario(SDD_LIST, { plugin: { sheet: { root: ROOT, sheet: { kind: 'decline', proposal } } } }),
+  'take-over': scenario(SDD_LIST, { plugin: { takeOver: { root: ROOT, key: `task-${43}`, then: { kind: 'idea', idea: idea(43) } } } }),
+  'epic-new': scenario(SDD_LIST, { epic: 15 }),
+  // Epic 7 is taken by another session: no session of this host, so Take over.
+  'epic-taken': scenario(SDD_LIST, { epic: 7, state: SESSION_COPY }),
+  'epic-session-alive': scenario(SDD_LIST, { epic: 7, state: SESSION_ALIVE }),
+  'epic-roles-unavailable': scenario(SDD_LIST, { epic: 15, noSubagents: true }),
   // A harness whose subagents have no types: the roles go by the texts of the CLI.
-  'epic-codex': scenario(EPIC_LIST, { epic: 15, state: session({ harness: 'codex' }) }),
+  'epic-codex': scenario(SDD_LIST, { epic: 15, state: session({ harness: 'codex' }) }),
   'no-project': {
     requests: {
       'projects.list': () => ok(PROJECTS.map((p) => (p.root === ROOT ? { ...p, project: null, source: null } : p)))

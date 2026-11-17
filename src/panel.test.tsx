@@ -9,21 +9,22 @@ import { afterEach, assert, mockHost, mount, mountWorker, test, type TestPanel }
 import {
   AGENTS,
   CURSOR,
-  EMPTY_LIST,
-  EPIC_LIST,
+  EMPTY_SDD,
   EPIC_TASKS,
   HANDLE,
   NO_KEY,
+  SDD_LIST,
   session,
   SESSION_ALIVE,
   SESSION_COPY,
   SUBAGENTS,
-  TASK_LIST,
+  TAKEN,
   untyped
 } from '../test/fixtures'
 import { fake, json, until } from '../test/fake'
 import * as panel from './panel'
-import type { EpicList, EpicSummary, Milestone, OrcaProject, Result } from './protocol'
+import type { IdeaRow, InWorkRow, Milestone, OrcaProject, Result, RowTarget, SddList, TakenList } from './protocol'
+import { FULL_READ_MS, POLL_TAKEN_MS } from './sdd'
 import * as text from './text'
 import { refusalText } from './text'
 
@@ -41,6 +42,19 @@ const NOTES: OrcaProject = { name: 'Notes', root: '/notes', kind: 'folder', proj
 const DOCS: OrcaProject = { name: 'Docs', root: '/docs', kind: 'git', project: null, source: null, lines: [], filesRead: true, focused: false }
 const unfocused = (p: OrcaProject): OrcaProject => ({ ...p, focused: false })
 
+/** A fresh copy of a list, to change in one test. */
+const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T
+
+/**
+ * The list of the project with no epic taken: epic 7 waits to start. The tests of the screen of
+ * an epic run on it; the taken rows are tested on SDD_LIST.
+ */
+const LIST: SddList = (() => {
+  const list = copy(SDD_LIST)
+  list.in_work = list.in_work.map(({ updated_at: _gone, ...epic }) => ({ ...epic, status: 'TODO' as const }))
+  return list
+})()
+
 /** What an earlier run of the panel remembered: the epic open in the project at ROOT. */
 const at = (epic: number) => ({ plugin: { epics: { [ROOT]: epic } } })
 
@@ -55,9 +69,11 @@ function stub(answers: Record<string, (input: never) => unknown>) {
     }
   const defaults: Record<string, (input: never) => unknown> = {
     'projects.list': () => ok([SHOP]),
-    'epics.list': () => ok(EPIC_LIST),
-    'tasks.list': () => ok(TASK_LIST.tasks),
+    'sdd.list': () => ok(LIST),
+    'sdd.taken': () => ok({ project: HANDLE, taken: [{ id: 43, kind: 'bug', updated_at: '2026-11-16T10:00:00Z' }, { id: 46, kind: 'task', updated_at: '2026-11-15T18:30:00Z' }] }),
     'agents.get': () => ok(AGENTS),
+    'project.page': () => ok({ url: `https://me.conport.app/t/pers/p/${HANDLE}` }),
+    'row.session': () => ok({ terminal: null }),
     'epic.session': () => ok(session()),
     'epic.tasks': () => ok(EPIC_TASKS),
     'subagents.get': (input: { harness: string }) => ok(input.harness === 'claude' ? SUBAGENTS : untyped(input.harness))
@@ -93,14 +109,18 @@ async function openPicker(v: TestPanel, root: string): Promise<void> {
   await until(() => v.find({ testId: `project:${root}` }) !== null)
 }
 
-async function tab(v: TestPanel, value: 'launch' | 'prepare' | 'tasks'): Promise<void> {
-  await v.select({ label: 'Sections' }, value)
+/** The sections as drawn, in order: their titles with counts, and the caption under each. */
+const sectionsOf = (v: TestPanel): Array<[unknown, unknown]> =>
+  v.findAll({ type: 'Collapsible' })
+    .filter((c) => c.key?.startsWith('section:'))
+    .map((c) => [c.props.title, c.props.description])
+
+/** Unfolds or folds a section by its key. */
+async function fold(v: TestPanel, key: 'in_work' | 'specs' | 'ideas' | 'outside'): Promise<void> {
+  await v.toggle({ testId: `section:${key}` })
 }
 
-/** The labels of the tabs, with their counts. */
-const tabsOf = (v: TestPanel): string[] => v.findAll({ type: 'Tab' }).map((t) => String(t.props.label))
-
-/** The titles of the epic lists of the open tab, in the order drawn. */
+/** The titles of the lists drawn, in order. */
 const groupsOf = (v: TestPanel): string[] => v.findAll({ type: 'List' }).map((l) => String(l.props.label))
 
 /** The items of the list `label`, as `[title, description]`, in the order drawn. */
@@ -113,30 +133,86 @@ function itemsIn(v: TestPanel, label: string): Array<[unknown, unknown]> {
     .map((i) => [i.props.title, i.props.description])
 }
 
+/** The labels of the buttons of a row, in order. */
+function buttonsOf(v: TestPanel, testId: string): string[] {
+  const row = v.find({ testId })
+  if (!row) return []
+  return v
+    .findAll({ type: 'Button' })
+    .filter((b) => b.path.startsWith(`${row.path}/`))
+    .map((b) => b.text)
+}
+
 const headingOf = (v: TestPanel, level: number): string | undefined =>
   v.findAll({ type: 'Heading' }).find((h) => h.props.level === level)?.text
 
-test('epics and tasks of the focused project come from the worker over the fake cli', async () => {
+/**
+ * Catches the timer the panel sets in its setup, so a test fires it by hand, and the clock the
+ * panel reads. Set before the mount; `restore` after the test.
+ */
+function clockAndTimer() {
+  const real = { setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, now: Date.now }
+  const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = []
+  let now = real.now()
+  globalThis.setInterval = ((fn: () => void, ms?: number) => {
+    const timer = { fn, ms: ms ?? 0, cleared: false }
+    timers.push(timer)
+    return timer
+  }) as unknown as typeof setInterval
+  globalThis.clearInterval = ((handle: unknown) => {
+    const timer = timers.find((t) => t === handle)
+    if (timer) timer.cleared = true
+  }) as typeof clearInterval
+  Date.now = () => now
+  return {
+    /** The timers of the panel at `ms`, not cleared. */
+    at: (ms: number) => timers.filter((t) => t.ms === ms && !t.cleared),
+    /** Moves the clock and fires the minute timer once. */
+    tick: (later = 0) => {
+      now += later
+      for (const t of timers) if (t.ms === POLL_TAKEN_MS && !t.cleared) t.fn()
+    },
+    restore: () => {
+      globalThis.setInterval = real.setInterval
+      globalThis.clearInterval = real.clearInterval
+      Date.now = real.now
+    }
+  }
+}
+
+/** Lets the reads a tick started finish and the panel draw them. */
+async function settle(v: TestPanel): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await v.settled()
+}
+
+test('the stages of the focused project come from the worker over the fake cli', async () => {
   const f = fake([
-    { match: 'epic list', stdout: json(EPIC_LIST) },
-    { match: 'task list', stdout: json(TASK_LIST) },
-    { match: 'epic agents', stdout: json(AGENTS) }
+    { match: 'sdd list', stdout: json(LIST) },
+    { match: 'epic agents', stdout: json(AGENTS) },
+    { match: 'api projects get', stdout: json({ handle: HANDLE, canonical_name: 'pers/shop' }) }
   ])
   mkdirSync(join(f.root, '.claude'))
   writeFileSync(join(f.root, '.claude', 'settings.local.json'), JSON.stringify({ env: { CONPORT_PROJECT_NAME: 'shop-api' } }))
   const worker = await mountWorker(f.worker, { host: f.host() })
   // The panel's requests go to the real worker, which runs the fake CLI.
   const forward = (name: string) => (input: never) => worker.request(name as never, input)
-  const names = ['projects.list', 'epics.list', 'tasks.list', 'agents.get']
+  const names = ['projects.list', 'sdd.list', 'agents.get', 'project.page', 'row.session']
   view = await mount(panel, { host: mockHost({ requests: Object.fromEntries(names.map((n) => [n, forward(n)])) as never }) })
 
   const calls = f.conportCalls()
-  assert.deepEqual(calls.find((c) => c[0] === 'epic' && c[1] === 'list'), ['epic', 'list', '--project', 'shop-api', '--json'])
-  assert.deepEqual(calls.find((c) => c[0] === 'task'), ['task', 'list', '--project', 'shop-api', '--json'])
-  assert.deepEqual(tabsOf(view), ['Ready to run · 2', 'Prepare · 2', 'Tasks · 5'])
-  assert.deepEqual(groupsOf(view), ['Release 2.4', 'No milestone'])
+  assert.deepEqual(calls.find((c) => c[0] === 'sdd'), ['sdd', 'list', '-p', 'shop-api', '--json'])
+  // No list of the tabs the panel had: no epic list, no task list.
+  assert.deepEqual(calls.filter((c) => (c[0] === 'epic' && c[1] === 'list') || c[0] === 'task'), [])
+  assert.deepEqual(sectionsOf(view), [
+    ['In work · 2', 'spec + plan'],
+    ['Specs · 2', 'spec, no plan'],
+    ['Ideas · 6', 'not worked through'],
+    ['Outside SDD · 1', 'no spec']
+  ])
+  assert.deepEqual(groupsOf(view), ['In work: Release 2.4', 'In work: No milestone', 'Specs', 'Ideas'])
   // The list reads nothing of an epic: its tasks and its subagent types are read when it is opened.
-  assert.deepEqual(calls.filter((c) => c[0] === 'api' || c[1] === 'subagents' || c[1] === 'status'), [])
+  assert.deepEqual(calls.filter((c) => (c[0] === 'api' && c[1] === 'tasks') || c[1] === 'subagents' || c[1] === 'status'), [])
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.refusals, [])
   await worker.deactivate()
@@ -201,7 +277,7 @@ test('a project without a binding offers to bind it', async () => {
   assert.equal(pickerOf(view)?.props.title, 'Docs')
   await view.type({ label: 'ConPort project' }, 'docs-api', { submit: true })
   assert.deepEqual(inputsOf(calls, 'project.set'), [{ root: DOCS.root, project: 'docs-api' }])
-  assert.deepEqual(inputsOf(calls, 'epics.list').at(-1), { project: 'docs-api', root: DOCS.root })
+  assert.deepEqual(inputsOf(calls, 'sdd.list').at(-1), { project: 'docs-api', root: DOCS.root })
   assert.equal(view.find({ text: 'Bind' }), null)
 })
 
@@ -214,7 +290,7 @@ test('the bind card names .conport.json', async () => {
     'The repository has no .conport.json with project_name. Name the project once — the panel remembers it for this repository.'
   )
   doesNotMatch(textOf(view), /settings\.local\.json|CONPORT_PROJECT_NAME/)
-  assert.deepEqual(inputsOf(calls, 'epics.list'), [])
+  assert.deepEqual(inputsOf(calls, 'sdd.list'), [])
 })
 
 test('the bind card of a submodule says its settings files are not read', async () => {
@@ -242,7 +318,7 @@ test('settings lines are shown with the project', async () => {
     LINES
   )
   // The project is read as usual beside them.
-  assert.deepEqual(inputsOf(calls, 'epics.list'), [{ project: 'shop-api', root: ROOT }])
+  assert.deepEqual(inputsOf(calls, 'sdd.list'), [{ project: 'shop-api', root: ROOT }])
   assert.ok(view.find({ testId: 'epic:15' }))
   await view.unmount()
 
@@ -253,7 +329,7 @@ test('settings lines are shown with the project', async () => {
   assert.equal(view.find({ testId: 'settings-lines' })?.text.includes(BROKEN[0] ?? '-'), true, textOf(view))
   assert.equal(view.find({ type: 'Input', label: 'ConPort project' }), null)
   assert.equal(view.find({ type: 'Card', label: 'ConPort project' })?.props.description, text.SETTINGS_BROKEN)
-  assert.deepEqual(inputsOf(broken.calls, 'epics.list'), [])
+  assert.deepEqual(inputsOf(broken.calls, 'sdd.list'), [])
 
   // Without lines no box is drawn.
   await view.unmount()
@@ -282,14 +358,14 @@ test('a folder project cannot run', async () => {
   assert.equal(folder?.props.disabled, true)
   assert.equal(folder?.props.description, 'Folder without git — nothing to run')
   assert.equal(view.find({ text: 'Bind' }), null)
-  assert.deepEqual(inputsOf(calls, 'epics.list'), [{ project: 'shop-api', root: ROOT }])
+  assert.deepEqual(inputsOf(calls, 'sdd.list'), [{ project: 'shop-api', root: ROOT }])
 })
 
 test('the focused project is selected first', async () => {
   const { host, calls } = stub({ 'projects.list': () => ok([BILLING, SHOP].map((p) => ({ ...p, focused: p === SHOP }))) })
   // The project chosen last loses to the one in focus.
   view = await mount(panel, { host, persisted: { plugin: { project: BILLING.root } } })
-  assert.deepEqual(inputsOf(calls, 'epics.list'), [{ project: 'shop-api', root: ROOT }])
+  assert.deepEqual(inputsOf(calls, 'sdd.list'), [{ project: 'shop-api', root: ROOT }])
   await view.toggle({ testId: 'project-picker' })
   assert.equal(view.find({ testId: `project:${ROOT}` })?.props.current, true)
   assert.equal(view.find({ testId: `project:${BILLING.root}` })?.props.current, false)
@@ -308,24 +384,23 @@ test('without a focused workspace the last chosen project is selected', async ()
   for (const [persisted, expected] of cases) {
     const { host, calls } = stub({ 'projects.list': () => ok(list) })
     view = await mount(panel, { host, persisted })
-    assert.deepEqual(inputsOf(calls, 'epics.list'), [{ project: expected.project, root: expected.root }])
+    assert.deepEqual(inputsOf(calls, 'sdd.list'), [{ project: expected.project, root: expected.root }])
     await view.unmount()
     view = undefined
   }
   // Neither a folder nor a project without a binding counts as the first bound one.
   const { host, calls } = stub({ 'projects.list': () => ok([NOTES, DOCS, BILLING]) })
   view = await mount(panel, { host })
-  assert.deepEqual(inputsOf(calls, 'epics.list'), [{ project: 'billing-api', root: BILLING.root }])
+  assert.deepEqual(inputsOf(calls, 'sdd.list'), [{ project: 'billing-api', root: BILLING.root }])
 })
 
-test('choosing another project reads its epics and tasks and keeps the epic open in each', async () => {
+test('choosing another project reads its stages and keeps the epic open in each', async () => {
   const { host, calls } = stub({ 'projects.list': () => ok([SHOP, BILLING]) })
   view = await mount(panel, { host, persisted: at(15) })
   assert.deepEqual(inputsOf(calls, 'epic.session'), [{ project: HANDLE, root: ROOT, epic: 15 }])
   await pick(view, BILLING.root)
-  assert.deepEqual(inputsOf(calls, 'epics.list').at(-1), { project: 'billing-api', root: BILLING.root })
-  assert.deepEqual(inputsOf(calls, 'tasks.list').at(-1), { project: 'billing-api', root: BILLING.root })
-  // No epic is open in the second project: its epics show, no session is read.
+  assert.deepEqual(inputsOf(calls, 'sdd.list').at(-1), { project: 'billing-api', root: BILLING.root })
+  // No epic is open in the second project: its sections show, no session is read.
   assert.equal(inputsOf(calls, 'epic.session').length, 1)
   assert.ok(view.find({ testId: 'epic:15' }))
   await pick(view, ROOT)
@@ -335,27 +410,28 @@ test('choosing another project reads its epics and tasks and keeps the epic open
 })
 
 test('a slow answer for a project left meanwhile is dropped', async () => {
-  const billingEpics: EpicList = {
+  const billingEpics: SddList = {
+    ...EMPTY_SDD,
     project: 'prbi11ngq2',
-    epics: [{ id: 30, title: 'Invoices', status: 'TODO', progress: { open: 2, total: 2 }, milestone: null, runnable: true, reason: null, ready: false }]
+    in_work: [{ id: 30, title: 'Invoices', status: 'TODO', progress: { open: 2, total: 2 }, milestone: null, ready: false, reason: null, spec: null, idea: null }]
   }
   const pending: Array<() => void> = []
   let first = true
   const { host, calls } = stub({
     'projects.list': () => ok([SHOP, BILLING]),
-    'epics.list': (input: { root: string }) => {
+    'sdd.list': (input: { root: string }) => {
       if (first) {
         first = false
-        return ok(EPIC_LIST)
+        return ok(LIST)
       }
-      const answer = ok(input.root === BILLING.root ? billingEpics : EPIC_LIST)
+      const answer = ok(input.root === BILLING.root ? billingEpics : LIST)
       return new Promise((resolve) => pending.push(() => resolve(answer)))
     },
     'epic.start': () => ok({ terminal: 't', worktree: '/repo/epic-15' })
   })
   view = await mount(panel, { host, persisted: at(15) })
   await openPicker(view, BILLING.root)
-  // Billing, then Shop again before the epics of Billing came; they come last.
+  // Billing, then Shop again before the stages of Billing came; they come last.
   const toBilling = view.press({ testId: `project:${BILLING.root}` })
   await until(() => pending.length === 1)
   await openPicker(view, ROOT)
@@ -411,25 +487,25 @@ test('refresh keeps the project chosen by hand while orca lists it', async () =>
   await pick(view, BILLING.root)
   await view.press({ label: 'Refresh' })
   // The focus does not take the panel back from the project chosen by hand.
-  assert.deepEqual(inputsOf(calls, 'epics.list').at(-1), { project: 'billing-api', root: BILLING.root })
+  assert.deepEqual(inputsOf(calls, 'sdd.list').at(-1), { project: 'billing-api', root: BILLING.root })
   // Once Orca no longer lists it, the project opens as on the first load: the one in focus.
   listed = [SHOP]
   await view.press({ label: 'Refresh' })
-  assert.deepEqual(inputsOf(calls, 'epics.list').at(-1), { project: 'shop-api', root: ROOT })
+  assert.deepEqual(inputsOf(calls, 'sdd.list').at(-1), { project: 'shop-api', root: ROOT })
 })
 
 test('a reload with no project to open on keeps the one chosen last remembered', async () => {
   let listed: OrcaProject[] = [BILLING]
   const { host, calls } = stub({ 'projects.list': () => ok(listed) })
   view = await mount(panel, { host })
-  assert.deepEqual(inputsOf(calls, 'epics.list'), [{ project: 'billing-api', root: BILLING.root }])
+  assert.deepEqual(inputsOf(calls, 'sdd.list'), [{ project: 'billing-api', root: BILLING.root }])
   listed = [NOTES]
   await view.press({ label: 'Refresh' })
-  assert.equal(inputsOf(calls, 'epics.list').length, 1)
+  assert.equal(inputsOf(calls, 'sdd.list').length, 1)
   // Back in the list, the project chosen last opens before the first bound one.
   listed = [unfocused(SHOP), BILLING]
   await view.press({ label: 'Refresh' })
-  assert.deepEqual(inputsOf(calls, 'epics.list').at(-1), { project: 'billing-api', root: BILLING.root })
+  assert.deepEqual(inputsOf(calls, 'sdd.list').at(-1), { project: 'billing-api', root: BILLING.root })
 })
 
 /** A milestone of the roadmap, open epics as given. */
@@ -443,45 +519,51 @@ const milestone = (id: number, title: string, sequence: number, extra: Partial<M
   ...extra
 })
 
-/** A runnable epic that never ran, in `m`, with `open` of `total` tasks open. */
-const epic = (id: number, m: Milestone | null, extra: Partial<EpicSummary> = {}): EpicSummary => ({
+/** An epic In work that never ran, in `m`, with two tasks open. */
+const epic = (id: number, m: Milestone | null, extra: Partial<InWorkRow> = {}): InWorkRow => ({
   id,
   title: `Epic ${id}`,
   status: 'TODO',
   progress: { open: 2, total: 2 },
   milestone: m,
-  runnable: true,
-  reason: null,
   ready: false,
+  reason: null,
+  spec: null,
+  idea: null,
   ...extra
 })
 
-test('the launch tab groups runnable epics by milestone in roadmap order', async () => {
+/** A project with only these epics In work. */
+const inWork = (...epics: InWorkRow[]): SddList => ({ ...EMPTY_SDD, in_work: epics })
+
+test('In work groups its epics by milestone in roadmap order', async () => {
   const later = milestone(4, 'Later', 9)
   const sooner = milestone(8, 'Sooner', 1)
-  const list: EpicList = {
-    project: HANDLE,
-    epics: [
-      epic(20, null),
-      epic(21, later),
-      epic(22, sooner),
-      // An epic that cannot run is not in this tab, nor is its milestone.
-      epic(23, milestone(6, 'Unprepared', 0), { runnable: false, reason: 'no plan' }),
-      epic(24, sooner),
-      epic(25, later)
-    ]
-  }
-  const { host } = stub({ 'epics.list': () => ok(list) })
+  const list = inWork(epic(20, null), epic(21, later), epic(22, sooner), epic(24, sooner), epic(25, later))
+  const { host } = stub({ 'sdd.list': () => ok(list) })
   view = await mount(panel, { host })
   // Milestones by their place in the roadmap, not by id or by the order of the epics; the epics
   // outside a milestone last.
-  assert.deepEqual(groupsOf(view), ['Sooner', 'Later', 'No milestone'])
+  assert.deepEqual(groupsOf(view), ['In work: Sooner', 'In work: Later', 'In work: No milestone'])
   const titles = (label: string) => itemsIn(view as TestPanel, label).map(([title]) => title)
-  assert.deepEqual(titles('Sooner'), ['22 · Epic 22', '24 · Epic 24'])
-  assert.deepEqual(titles('Later'), ['21 · Epic 21', '25 · Epic 25'])
-  assert.deepEqual(titles('No milestone'), ['20 · Epic 20'])
-  assert.equal(view.find({ testId: 'epic:23' }), null)
-  assert.equal(tabsOf(view)[0], 'Ready to run · 5')
+  assert.deepEqual(titles('In work: Sooner'), ['22 · Epic 22', '24 · Epic 24'])
+  assert.deepEqual(titles('In work: Later'), ['21 · Epic 21', '25 · Epic 25'])
+  assert.deepEqual(titles('In work: No milestone'), ['20 · Epic 20'])
+  assert.equal(sectionsOf(view)[0]?.[0], 'In work · 5')
+})
+
+test('an epic In work with several specs or plans cannot start and does not show the reason of the CLI', async () => {
+  const { host } = stub({ 'sdd.list': () => ok(inWork(epic(30, null, { reason: 'several specs' }), epic(31, null))) })
+  view = await mount(panel, { host })
+  const row = view.find({ testId: 'epic:30' })
+  assert.equal(row?.props.description, 'Cannot start: more than one spec or plan')
+  assert.equal(row?.props.disabled, true)
+  doesNotMatch(textOf(view), /several specs/)
+  // Remembered as open, it is not: the list shows.
+  await view.unmount()
+  view = await mount(panel, { host, persisted: at(30) })
+  assert.equal(view.find({ text: '← Sections' }), null)
+  assert.ok(view.find({ testId: 'epic:31' }))
 })
 
 test('a release milestone shows its open epics or that it is ready to close', async () => {
@@ -496,9 +578,9 @@ test('a release milestone shows its open epics or that it is ready to close', as
     release(6, 'Ready', 0, true),
     milestone(7, 'Not a release', 7, { open_epics: 3 })
   ]
-  const { host } = stub({ 'epics.list': () => ok({ project: HANDLE, epics: milestones.map((m, i) => epic(30 + i, m)) }) })
+  const { host } = stub({ 'sdd.list': () => ok(inWork(...milestones.map((m, i) => epic(30 + i, m)))) })
   view = await mount(panel, { host })
-  const said = Object.fromEntries(milestones.map((m) => [m.title, view?.find({ testId: `release:${m.id}` })?.text ?? null]))
+  const said = Object.fromEntries(milestones.map((m) => [m.title, view?.find({ testId: `release:in_work:${m.id}` })?.text ?? null]))
   assert.deepEqual(said, {
     'One open': 'Release · 1 epic open',
     'Two open': 'Release · 2 epics open',
@@ -512,31 +594,26 @@ test('a release milestone shows its open epics or that it is ready to close', as
 })
 
 test('the epic row tells not started and in progress from conport counts, ready to merge from the readiness entry', async () => {
-  const list: EpicList = {
-    project: HANDLE,
-    epics: [
-      epic(40, null, { progress: { open: 7, total: 7 } }),
-      epic(41, null, { progress: { open: 1, total: 1 } }),
-      // IN_PROGRESS with no task closed yet, and TODO with one closed: both in progress.
-      epic(42, null, { status: 'IN_PROGRESS', progress: { open: 4, total: 4 } }),
-      epic(43, null, { progress: { open: 18, total: 26 } }),
-      // Every task closed, and no entry of the core that the epic is ready: still in progress.
-      epic(44, null, { status: 'IN_PROGRESS', progress: { open: 0, total: 6 } }),
-      // No task at all is not ready to merge.
-      epic(45, null, { progress: { open: 0, total: 0 } }),
-      // The core found it ready to merge.
-      epic(46, null, { progress: { open: 0, total: 5 }, ready: true })
-    ]
-  }
-  const { host } = stub({ 'epics.list': () => ok(list) })
+  const list = inWork(
+    epic(40, null, { progress: { open: 7, total: 7 } }),
+    epic(41, null, { progress: { open: 1, total: 1 } }),
+    // One task closed: in progress. An epic IN_PROGRESS is taken, said by the time of its change.
+    epic(43, null, { progress: { open: 18, total: 26 } }),
+    // Every task closed, and no entry of the core that the epic is ready: still in progress.
+    epic(44, null, { progress: { open: 0, total: 6 } }),
+    // No task at all is not ready to merge.
+    epic(45, null, { progress: { open: 0, total: 0 } }),
+    // The core found it ready to merge.
+    epic(46, null, { progress: { open: 0, total: 5 }, ready: true })
+  )
+  const { host } = stub({ 'sdd.list': () => ok(list) })
   view = await mount(panel, { host })
   const row = (id: number) => view?.find({ testId: `epic:${id}` })
   assert.deepEqual(
-    [40, 41, 42, 43, 44, 45, 46].map((id) => row(id)?.props.description),
+    [40, 41, 43, 44, 45, 46].map((id) => row(id)?.props.description),
     [
       'Not started · 7 tasks',
       'Not started · 1 task',
-      'In progress · 0 of 4 closed',
       'In progress · 8 of 26 closed',
       'In progress · 6 of 6 closed',
       'Not started · 0 tasks',
@@ -546,7 +623,6 @@ test('the epic row tells not started and in progress from conport counts, ready 
   // Only an epic in progress draws the share of closed tasks.
   const bars = view.findAll({ type: 'Progress' }).map((p) => [p.props.label, p.props.value])
   assert.deepEqual(bars, [
-    ['0 of 4 closed', 0],
     ['8 of 26 closed', 31],
     ['6 of 6 closed', 100]
   ])
@@ -580,7 +656,7 @@ test('opening an epic reads its session, its tasks and the subagent types once, 
   assert.deepEqual(inputsOf(calls, 'epic.session'), [EPIC])
   assert.deepEqual(inputsOf(calls, 'epic.tasks'), [EPIC])
   assert.deepEqual(inputsOf(calls, 'subagents.get'), [{ root: ROOT, harness: 'claude' }])
-  assert.ok(view.find({ text: '← Epics' }))
+  assert.ok(view.find({ text: '← Sections' }))
   assert.equal(view.find({ testId: 'epic-kicker' })?.text, '15')
   assert.equal(headingOf(view, 2), 'Offline mode')
   assert.deepEqual(view.findAll({ type: 'Badge' }).map((b) => b.text), ['Spec ✓', 'Plan ✓'])
@@ -650,18 +726,18 @@ test('the choice of one epic does not change the choice of another', async () =>
   const { host, calls } = stub({})
   view = await mount(panel, { host, persisted: at(15) })
   await view.select({ label: 'Implementer' }, 'sdd-task-reviewer')
-  await view.press({ text: '← Epics' })
+  await view.press({ text: '← Sections' })
   await view.press({ testId: 'epic:7' })
   assert.equal(view.find({ label: 'Harness' })?.props.value, 'claude')
   assert.deepEqual(typesOf(view), DEFAULT_TYPES)
   await view.select({ label: 'Harness' }, 'codex')
   // Back in the first epic its own choice stands, though nothing was started.
-  await view.press({ text: '← Epics' })
+  await view.press({ text: '← Sections' })
   await view.press({ testId: 'epic:15' })
   assert.equal(view.find({ label: 'Harness' })?.props.value, 'claude')
   assert.deepEqual(typesOf(view), ['sdd-task-reviewer', ...DEFAULT_TYPES.slice(1)])
   // A choice not sent by a start is the panel's own: nothing was asked to keep it.
-  assert.deepEqual([...new Set(calls.map((c) => c.name))].sort(), ['agents.get', 'epic.session', 'epic.tasks', 'epics.list', 'projects.list', 'subagents.get', 'tasks.list'])
+  assert.deepEqual([...new Set(calls.map((c) => c.name))].sort(), ['agents.get', 'epic.session', 'epic.tasks', 'project.page', 'projects.list', 'row.session', 'sdd.list', 'subagents.get'])
 })
 
 test('a new epic takes the harness of the last start, and Claude Code without one', async () => {
@@ -996,7 +1072,8 @@ test('show the terminal asks the worker to switch', async () => {
   view = await mount(panel, { host, persisted: at(7) })
   await view.press({ text: 'Show terminal' })
   // The epic is named, by the handle of the project; no terminal is: the worker finds it anew.
-  assert.deepEqual(inputsOf(calls, 'terminal.show'), [{ project: HANDLE, root: ROOT, epic: 7 }])
+  // The epic goes with its spec and its idea, whose terminals it inherits.
+  assert.deepEqual(inputsOf(calls, 'terminal.show'), [{ project: HANDLE, root: ROOT, row: { kind: 'epic', id: 7, spec: 18, idea: null } }])
   assert.equal(view.findAll({ type: 'Callout' }).some((c) => c.props.tone === 'danger'), false)
   gone = true
   await view.press({ text: 'Show terminal' })
@@ -1040,11 +1117,11 @@ test('the tasks of an epic are counted by status, parked only when there are som
   assert.equal(startOf(view)?.props.disabled, false)
 })
 
-test('the notice goes on refresh, on leaving the epic, on another tab, on another project and when the session is alive', async () => {
+test('the notice goes on refresh, on leaving the epic, on opening a sheet, on another project and when the session is alive', async () => {
   const NOTICE = 'The agent of epic 15 is open in the terminal of working copy epic-15; it asks its questions there'
   /** A panel on epic 15 just started, its agent not yet seen: the notice stands. */
   const afterStart = async (): Promise<TestPanel> => {
-    const { host } = stub({ 'projects.list': () => ok([SHOP, BILLING]), 'epic.start': () => started(), 'task.hand': () => ok({ terminal: 'term-1' }) })
+    const { host } = stub({ 'projects.list': () => ok([SHOP, BILLING]), 'epic.start': () => started(), 'idea.start': () => ok({ terminal: 'term-1' }) })
     const v = await mount(panel, { host, persisted: at(15) })
     view = v
     await v.press({ text: 'Start' })
@@ -1062,15 +1139,14 @@ test('the notice goes on refresh, on leaving the epic, on another tab, on anothe
   await leave()
 
   v = await afterStart()
-  await v.press({ text: '← Epics' })
+  await v.press({ text: '← Sections' })
   assert.equal(noticeOf(v), null, 'leaving the epic')
-  // The notice of a task handed to an agent goes with the tab.
-  await tab(v, 'tasks')
-  await v.press({ testId: 'hand:41' })
+  // The notice of an idea started goes when another sheet opens.
+  await v.press({ testId: 'brainstorm:task-41' })
   await v.press({ text: 'Open in terminal' })
-  assert.match(noticeOf(v) ?? '', /conport task 41/)
-  await tab(v, 'prepare')
-  assert.equal(noticeOf(v), null, 'another tab')
+  assert.match(noticeOf(v) ?? '', /conport idea 41/)
+  await v.press({ testId: 'review:42' })
+  assert.equal(noticeOf(v), null, 'a sheet')
   await leave()
 
   v = await afterStart()
@@ -1114,7 +1190,7 @@ test('the epic screen has no stop and no continue and asks for no run', async ()
 })
 
 test('a missing api key shows the cli refusal in the panel', async () => {
-  const { host } = stub({ 'epics.list': () => ({ ok: false, error: NO_KEY }) })
+  const { host } = stub({ 'sdd.list': () => ({ ok: false, error: NO_KEY }) })
   view = await mount(panel, { host })
   const box = view.findAll({ type: 'Callout' }).find((c) => c.props.tone === 'danger')
   // Said in the panel's words by the code of the refusal, with its one action; the CLI's English never shows.
@@ -1137,18 +1213,24 @@ test('the worker words these refusals itself, and no other', () => {
     'empty_project',
     'epic_branch_taken',
     'epic_not_found',
-    'epic_not_preparable',
     'epic_not_ready',
-    'epic_ready',
     'git_failed',
     'harness_invalid',
+    'idea_taken',
     'no_repository',
+    'no_spec',
     'no_workspace',
+    'not_a_proposal',
+    'not_an_idea',
     'project_not_handle',
+    'proposal_accepted',
+    'proposal_closed',
+    'reason_missing',
     'role_invalid',
     'root_detached',
     'root_not_open',
     'session_gone',
+    'spec_planned',
     'task_moved',
     'task_not_found',
     'terminals_truncated',
@@ -1179,7 +1261,7 @@ test('every refused action says the panel words: the cli by its code, the worker
     [{ code: 'spawn_failed', message: 'npx: spawn npx ENOENT', action: "Install Node.js and make npx visible on the Orca app's PATH." }, 'Could not start npx', "Install Node.js and make npx visible on the Orca app's PATH."],
     // The worker's own refusals are in the panel's words already: shown as they are.
     own('root_not_open', 'The repository root /repo is not open in Orca', 'Add the repository to Orca.'),
-    own('epic_not_ready', 'Epic 15 has no spec or no plan', 'Prepare the epic in the Prepare tab.'),
+    own('epic_not_ready', 'Epic 15 has no spec or no plan', 'Plan it from the Specs section.'),
     own('role_invalid', 'The subagent type is not a plain name', 'Choose a type for the role from the list.'),
     own('root_detached', "The repository's main working copy is not on a branch, so the epic has no base", 'Check out a branch in the main working copy.'),
     own('epic_branch_taken', 'The branch epic-15 is there, but it has no working copy', 'Open the branch as a workspace in Orca.'),
@@ -1253,219 +1335,688 @@ test('a project list orca cannot give is retried from the panel', async () => {
   assert.match(textOf(view), /Orca did not answer/)
   doesNotMatch(textOf(view), /Orca is not running/)
   await view.press({ text: 'Retry' })
-  assert.equal(calls.filter((c) => c.name === 'epics.list').length, 1)
+  assert.equal(calls.filter((c) => c.name === 'sdd.list').length, 1)
   doesNotMatch(textOf(view), /Orca did not answer/)
 })
 
-test('an empty project says so', async () => {
-  const { host } = stub({ 'epics.list': () => ok(EMPTY_LIST) })
+test('four sections in order with counts and captions, Outside SDD folded', async () => {
+  const { host } = stub({})
   view = await mount(panel, { host })
-  assert.ok(view.find({ type: 'EmptyState' }))
+  assert.deepEqual(sectionsOf(view), [
+    ['In work · 2', 'spec + plan'],
+    ['Specs · 2', 'spec, no plan'],
+    ['Ideas · 6', 'not worked through'],
+    ['Outside SDD · 1', 'no spec']
+  ])
+  assert.deepEqual(['in_work', 'specs', 'ideas', 'outside'].map((key) => view?.find({ testId: `section:${key}` })?.props.open), [true, true, true, false])
+  // What a folded section holds is not drawn.
+  assert.equal(view.find({ testId: 'outside:50' }), null)
+  assert.deepEqual(itemsIn(view, 'Specs'), [
+    [`doc-${30} · Archive export`, 'Spec of idea 6'],
+    ['9 · Audit log', 'Epic with a spec, no plan']
+  ])
+  // Ideas by priority, the proposal after the tasks of priority 3; the bug marked.
+  assert.deepEqual(
+    itemsIn(view, 'Ideas').map(([title]) => title),
+    ['41 · Rotate the backup key', '42 · Compare the metrics after the release', '43 · Check the backups', '46 · Simplify the search answer', `doc-${301} · Предложение: Search in the archive`, '47 · Read the old exports']
+  )
+  await fold(view, 'outside')
+  assert.deepEqual(itemsIn(view, 'Outside SDD: No milestone'), [
+    ['50 · Checks after the release', 'Not started · 1 task'],
+    ['51 · Compare the latency', 'High · not started']
+  ])
+  assert.deepEqual(buttonsOf(view, 'task:51'), ['Hand to agent'])
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.warnings, [])
+})
+
+test('an empty project says so in each section', async () => {
+  const { host } = stub({ 'sdd.list': () => ok(EMPTY_SDD) })
+  view = await mount(panel, { host, persisted: { plugin: { sections: { outside: false } } } })
+  assert.deepEqual(sectionsOf(view).map(([title]) => title), ['In work · 0', 'Specs · 0', 'Ideas · 0', 'Outside SDD · 0'])
+  for (const line of Object.values(text.EMPTY_SECTION)) assert.ok(view.find({ text: line }), line)
   assert.equal(view.find({ text: 'Start' }), null)
 })
 
-test('a project of only epics to prepare says none can be started', async () => {
-  const none = { ...EPIC_LIST, epics: EPIC_LIST.epics.filter((e) => !e.runnable) }
-  const { host } = stub({ 'epics.list': () => ok(none) })
+test('folding is kept in the plugin storage', async () => {
+  const { host } = stub({})
   view = await mount(panel, { host })
-  assert.match(textOf(view), /No epic is ready to run/)
-  assert.deepEqual(tabsOf(view), ['Ready to run · 0', 'Prepare · 2', 'Tasks · 5'])
+  await fold(view, 'specs')
+  await fold(view, 'outside')
+  assert.deepEqual(view.persisted.plugin.sections, { specs: true, outside: false })
+  assert.equal(view.find({ testId: `spec:doc-${30}` }), null)
+  assert.ok(view.find({ testId: 'outside:50' }))
+  // The next run of the panel opens them as they were left.
+  const kept = view.persisted.plugin.sections
+  await view.unmount()
+  view = await mount(panel, { host: stub({}).host, persisted: { plugin: { sections: kept } } })
+  assert.deepEqual(['in_work', 'specs', 'ideas', 'outside'].map((key) => view?.find({ testId: `section:${key}` })?.props.open), [true, false, true, true])
 })
 
-const PREPARABLE: EpicList = {
-  project: HANDLE,
-  epics: [
-    ...EPIC_LIST.epics,
-    epic(20, null, { title: 'Payments', runnable: false, reason: 'the documents of the epic cannot be read' })
-  ]
-}
-
-test('the prepare tab offers a spec or a plan by what the epic lacks', async () => {
-  const { host } = stub({ 'epics.list': () => ok(PREPARABLE) })
-  view = await mount(panel, { host })
-  assert.deepEqual(tabsOf(view), ['Ready to run · 2', 'Prepare · 3', 'Tasks · 5'])
-  await tab(view, 'prepare')
-  assert.match(textOf(view), /The agent talks the epic through with you and writes its spec and plan; then the epic appears in the Ready to run tab\./)
-  assert.deepEqual(groupsOf(view), ['Release 2.4', 'No milestone'])
-  // The reason of the CLI never reaches the panel as it is: the panel says its own line.
-  doesNotMatch(textOf(view), /"no spec"|"no plan"|cannot be read/)
-  // Nor glued into a longer line ("10 · no spec", "Audit log: no spec"): no row ends with a reason
-  // of the data after a separator. "Spec, no plan" is the panel's own line, not a reason glued on.
-  const reasons = PREPARABLE.epics.map((e) => e.reason).filter((r): r is string => r !== null)
-  const glued = (line: string, reason: string): boolean =>
-    line === reason || (line.endsWith(reason) && /[·:—]\s*$/.test(line.slice(0, line.length - reason.length)))
-  const rows = view.findAll({ type: 'ListItem' })
-  assert.equal(rows.length, 3)
-  for (const row of rows) {
-    const line = String(row.props.description ?? '')
-    for (const reason of reasons) assert.equal(glued(line, reason), false, `${row.key}: ${line}`)
-  }
-  const described = Object.fromEntries([9, 10, 20].map((id) => [id, view?.find({ testId: `epic:${id}` })?.props.description]))
-  assert.deepEqual(described, { 9: 'Spec, no plan', 10: 'No spec', 20: 'Not ready to run for another reason' })
-  assert.equal(view.find({ testId: 'prepare:9' })?.text, 'Write plan')
-  assert.equal(view.find({ testId: 'prepare:10' })?.text, 'Prepare')
-  // An epic that cannot run for another reason cannot be prepared.
-  assert.equal(view.find({ testId: 'prepare:20' }), null)
-  assert.equal(view.find({ testId: 'epic:20' })?.props.disabled, true)
-})
-
-test('an epic without a spec is prepared by the agent chosen in the sheet', async () => {
+test('a taken row says In progress · updated and offers Show terminal when this host opened it, else Take over', async () => {
+  // This host opened the terminal of idea 43; epic 7 was taken from another client.
   const { host, calls } = stub({
-    'agents.get': () => ok({ agents: [...AGENTS.agents, { id: 'cursor', label: 'Cursor', command: 'cursor-agent', found: true }], preparer: 'codex' }),
-    'epic.prepare': () => ok({ terminal: 'term-1' })
+    'sdd.list': () => ok(SDD_LIST),
+    'row.session': (input: RowTarget) => ok({ terminal: input.row.kind === 'idea' && input.row.id === 43 ? 'term-43' : null }),
+    'terminal.show': () => ok(null)
   })
   view = await mount(panel, { host })
-  await tab(view, 'prepare')
-  await view.press({ testId: 'prepare:10' })
+  const line = (iso: string) => text.updatedLine(iso, new Date())
+  assert.equal(view.find({ testId: 'idea:43' })?.props.description, `${text.BUG_LABEL} · ${line('2026-11-16T10:00:00Z')}`)
+  assert.deepEqual(buttonsOf(view, 'idea:43'), ['Show terminal'])
+  assert.equal(view.find({ testId: 'epic:7' })?.props.description, line('2026-11-16T09:12:00Z'))
+  assert.match(String(view.find({ testId: 'epic:7' })?.props.description), /^In progress · updated /)
+  // An idea back from review is in progress and not taken: its fixes are due.
+  assert.equal(view.find({ testId: 'idea:46' })?.props.description, 'Changes requested')
+  assert.deepEqual(buttonsOf(view, 'idea:46'), ['Fix'])
+  // Blocked: nothing to press; to do: Brainstorm; in review: Review.
+  assert.deepEqual(buttonsOf(view, 'idea:47'), [])
+  assert.equal(view.find({ testId: 'idea:47' })?.props.description, 'Blocked')
+  assert.deepEqual(buttonsOf(view, 'idea:41'), ['Brainstorm'])
+  assert.deepEqual(buttonsOf(view, 'idea:42'), ['Review'])
+  // The terminals asked for: the ideas waiting or taken, the specs, every epic In work that can start.
+  const asked = (inputsOf(calls, 'row.session') as RowTarget[]).map(({ row }) => row)
+  assert.deepEqual(asked, [
+    { kind: 'idea', id: 41 },
+    { kind: 'idea', id: 43 },
+    { kind: 'spec', doc: 30, idea: 6 },
+    { kind: 'epic', id: 9, spec: 22, idea: null },
+    { kind: 'epic', id: 7, spec: 18, idea: null },
+    { kind: 'epic', id: 15, spec: 20, idea: 5 }
+  ])
+  await view.press({ testId: 'show:task-43' })
+  assert.deepEqual(inputsOf(calls, 'terminal.show'), [{ project: HANDLE, root: ROOT, row: { kind: 'idea', id: 43 } }])
+  await view.unmount()
+  // Without a terminal of this host the taken idea offers Take over.
+  const elsewhere = stub({ 'sdd.list': () => ok(SDD_LIST) })
+  view = await mount(panel, { host: elsewhere.host })
+  assert.deepEqual(buttonsOf(view, 'idea:43'), ['Take over'])
+  // A spec whose plan this host writes shows its terminal; the taken epic of a spec offers Take over.
+  await view.unmount()
+  const list = copy(SDD_LIST)
+  const ofEpic = list.specs[1]
+  if (ofEpic) ofEpic.status = 'IN_PROGRESS'
+  const writing = stub({ 'sdd.list': () => ok(list), 'row.session': (input: RowTarget) => ok({ terminal: input.row.kind === 'spec' ? 'term-30' : null }) })
+  view = await mount(panel, { host: writing.host })
+  assert.deepEqual(buttonsOf(view, `spec:doc-${30}`), ['Show terminal', 'Open spec'])
+  assert.deepEqual(buttonsOf(view, 'spec:epic-9'), ['Take over', 'Open spec'])
+})
+
+test('a spec document whose idea this host brainstormed shows Show terminal, not Plan & build', async () => {
+  // The brainstorm of idea 6 wrote spec 30 and goes on to its plan in the same terminal: the worker
+  // finds that terminal by the idea the panel names with the spec.
+  const { host, calls } = stub({
+    'sdd.list': () => ok(SDD_LIST),
+    'row.session': (input: RowTarget) => ok({ terminal: input.row.kind === 'spec' && input.row.idea === 6 ? 'term-6' : null }),
+    'terminal.show': () => ok(null)
+  })
+  view = await mount(panel, { host })
+  assert.deepEqual(buttonsOf(view, `spec:doc-${30}`), ['Show terminal', 'Open spec'])
+  await view.press({ testId: `show:doc-${30}` })
+  assert.deepEqual(inputsOf(calls, 'terminal.show'), [{ project: HANDLE, root: ROOT, row: { kind: 'spec', doc: 30, idea: 6 } }])
+})
+
+test('Take over asks Another session may be working on it first', async () => {
+  const { host, calls } = stub({ 'sdd.list': () => ok(SDD_LIST), 'idea.start': () => ok({ terminal: 'term-1' }) })
+  view = await mount(panel, { host })
+  await view.press({ testId: 'take-over:task-43' })
+  // Asked first: nothing is opened yet.
+  const box = view.find({ testId: 'take-over' })
+  assert.equal(box?.props.title, 'Another session may be working on it')
+  assert.equal(view.find({ testId: 'sheet' }), null)
+  await view.press({ text: 'Cancel' })
+  assert.equal(view.find({ testId: 'take-over' }), null)
+  // After the yes, the same start as Brainstorm.
+  await view.press({ testId: 'take-over:task-43' })
+  await view.press({ text: 'Yes, take over' })
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Brainstorm “Check the backups”')
+  await view.press({ text: 'Open in terminal' })
+  assert.deepEqual(inputsOf(calls, 'idea.start'), [{ project: HANDLE, root: ROOT, task: 43, agent: 'claude' }])
+  await view.unmount()
+  // An epic In work taken elsewhere is taken over from its screen, asked the same way.
+  const epicCalls = stub({ 'sdd.list': () => ok(SDD_LIST), 'epic.start': () => started() })
+  view = await mount(panel, { host: epicCalls.host })
+  await view.press({ testId: 'epic:7' })
+  assert.equal(view.find({ text: 'Start' }), null)
+  await view.press({ text: 'Take over' })
+  assert.equal(view.find({ testId: 'confirm-take-over' })?.props.title, 'Another session may be working on it')
+  assert.deepEqual(inputsOf(epicCalls.calls, 'epic.start'), [])
+  await view.press({ text: 'Yes, take over' })
+  assert.deepEqual((inputsOf(epicCalls.calls, 'epic.start') as Array<{ epic: number }>).map(({ epic }) => epic), [7])
+})
+
+test('Brainstorm of an idea calls idea.start, of a proposal proposal.start', async () => {
+  const { host, calls } = stub({
+    'agents.get': () => ok({ agents: [...AGENTS.agents, CURSOR], launcher: 'codex' }),
+    'idea.start': () => ok({ terminal: 'term-1' }),
+    'proposal.start': () => ok({ terminal: 'term-2', task: 61 })
+  })
+  view = await mount(panel, { host })
+  await view.press({ testId: 'brainstorm:task-41' })
   // The sheet: what the agent does, and which agent; the one of last time first.
   const sheet = view.find({ testId: 'sheet' })
-  assert.equal(sheet?.props.title, 'Prepare “Audit log”')
-  assert.equal(sheet?.props.description, '10 · no spec')
+  assert.equal(sheet?.props.title, 'Brainstorm “Rotate the backup key”')
+  assert.equal(sheet?.props.description, '41 · idea')
   const steps = view.findAll({ type: 'Row' }).filter((r) => r.key?.startsWith('step:'))
-  assert.deepEqual(steps.map((s) => s.text), [
-    '1 Talks the epic through with you and writes the spec',
-    '2 After your yes, uploads it to ConPort',
-    "3 Writes the plan, links the epic's tasks, imports the plan"
-  ])
-  const radio = view.find({ label: 'Who prepares' })
+  assert.equal(steps.length, 3)
+  assert.match(steps[2]?.text ?? '', /Writing the plan means building right after it\. Plan and build now\?/)
+  const radio = view.find({ label: 'Who brainstorms' })
   assert.equal(radio?.props.value, 'codex')
   assert.deepEqual(radio?.props.options, [
     { value: 'claude', label: 'Claude Code' },
     { value: 'codex', label: 'Codex', description: 'last time' },
     { value: 'cursor', label: 'Cursor' }
   ])
-  await view.select({ label: 'Who prepares' }, 'claude')
+  await view.select({ label: 'Who brainstorms' }, 'claude')
+  const before = inputsOf(calls, 'sdd.list').length
   await view.press({ text: 'Open in terminal' })
-  assert.deepEqual(inputsOf(calls, 'epic.prepare'), [{ project: HANDLE, root: ROOT, epic: 10, agent: 'claude' }])
+  assert.deepEqual(inputsOf(calls, 'idea.start'), [{ project: HANDLE, root: ROOT, task: 41, agent: 'claude' }])
   assert.equal(view.find({ testId: 'sheet' }), null)
-  assert.match(textOf(view), /Preparation of epic 10 is open in terminal “conport prepare 10” of repository “Shop”/)
+  assert.match(view.find({ testId: 'notice' })?.text ?? '', /Brainstorm of task 41 is open in terminal “conport idea 41” of repository “Shop”/)
+  // The list is read again right after the start.
+  assert.equal(inputsOf(calls, 'sdd.list').length, before + 1)
+  // A proposal: accepted and brainstormed by the worker; the notice names the idea it became.
+  await view.press({ testId: `brainstorm:doc-${301}` })
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Brainstorm “Предложение: Search in the archive”')
+  assert.match(textOf(view), /Takes the proposal into design: finds or files its idea/)
+  await view.press({ text: 'Open in terminal' })
+  assert.deepEqual(inputsOf(calls, 'proposal.start'), [{ project: HANDLE, root: ROOT, doc: 301, agent: 'claude' }])
+  assert.match(view.find({ testId: 'notice' })?.text ?? '', /Brainstorm of task 61 is open in terminal “conport idea 61”/)
   assert.deepEqual(view.errors, [])
 })
 
-test('the sheet of an epic with a spec writes the plan, and Cancel closes it', async () => {
+test('a refused start says why and keeps the sheet', async () => {
+  const { host, calls } = stub({
+    'idea.start': () => refused('idea_taken', 'Task 41 is past brainstorming: it is in review, blocked or closed', 'Press Refresh.')
+  })
+  view = await mount(panel, { host })
+  await view.press({ testId: 'brainstorm:task-41' })
+  const reads = inputsOf(calls, 'sdd.list').length
+  await view.press({ text: 'Open in terminal' })
+  const box = view.findAll({ type: 'Callout' }).find((c) => c.props.tone === 'danger')
+  assert.equal(box?.props.title, 'Task 41 is past brainstorming: it is in review, blocked or closed')
+  assert.ok(view.find({ testId: 'sheet' }))
+  // Nothing was started: the list is not read again.
+  assert.equal(inputsOf(calls, 'sdd.list').length, reads)
+})
+
+test('Decline sends nothing without a reason', async () => {
+  const { host, calls } = stub({ 'proposal.decline': () => ok(null) })
+  view = await mount(panel, { host })
+  await view.press({ testId: `decline:doc-${301}` })
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Decline “Предложение: Search in the archive”')
+  const decline = () => view?.findAll({ type: 'Button' }).find((b) => b.text === 'Decline' && b.path.startsWith(`${view?.find({ testId: 'sheet' })?.path}/`))
+  // No agent is offered: no agent is started.
+  assert.equal(view.find({ type: 'RadioGroup' }), null)
+  assert.equal(decline()?.props.disabled, true)
+  await view.type({ label: 'Reason' }, '   ')
+  assert.equal(decline()?.props.disabled, true)
+  assert.deepEqual(inputsOf(calls, 'proposal.decline'), [])
+  await view.type({ label: 'Reason' }, 'Out of scope for this year', { replace: true })
+  assert.equal(decline()?.props.disabled, false)
+  await view.press(decline() as never)
+  assert.deepEqual(inputsOf(calls, 'proposal.decline'), [{ project: HANDLE, root: ROOT, doc: 301, reason: 'Out of scope for this year' }])
+  assert.equal(view.find({ testId: 'sheet' }), null)
+  assert.equal(view.find({ testId: 'notice' })?.text, `Proposal doc-${301} is declined with your reason.`)
+  assert.deepEqual(inputsOf(calls, 'idea.start'), [])
+})
+
+test('Plan & build of a spec document and of an epic calls spec.start', async () => {
+  const { host, calls } = stub({ 'spec.start': () => ok({ terminal: 'term-1' }) })
+  view = await mount(panel, { host })
+  assert.deepEqual(buttonsOf(view, `spec:doc-${30}`), ['Plan & build', 'Open spec'])
+  await view.press({ testId: `plan:doc-${30}` })
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Plan & build “Archive export”')
+  assert.equal(view.find({ testId: 'sheet' })?.props.description, `doc-${30} · spec, no plan`)
+  assert.equal(view.find({ label: 'Who plans and builds' })?.props.value, 'claude')
+  await view.press({ text: 'Open in terminal' })
+  assert.match(view.find({ testId: 'notice' })?.text ?? '', new RegExp(`Spec doc-${30} is open in terminal “conport spec doc-${30}”`))
+  await view.press({ testId: 'plan:epic-9' })
+  assert.equal(view.find({ testId: 'sheet' })?.props.description, '9 · spec, no plan')
+  await view.press({ text: 'Open in terminal' })
+  assert.deepEqual(inputsOf(calls, 'spec.start'), [
+    { project: HANDLE, root: ROOT, target: { doc: 30 }, agent: 'claude' },
+    { project: HANDLE, root: ROOT, target: { epic: 9 }, agent: 'claude' }
+  ])
+  assert.match(view.find({ testId: 'notice' })?.text ?? '', /The spec of epic 9 is open in terminal “conport spec 9”/)
+})
+
+test('Open spec opens the document in the dashboard', async () => {
   const { host, calls } = stub({})
   view = await mount(panel, { host })
-  await tab(view, 'prepare')
-  await view.press({ testId: 'prepare:9' })
-  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Write plan “Archive export”')
-  assert.equal(view.find({ testId: 'sheet' })?.props.description, '9 · no plan')
-  // Without the agent of last time the first one found that can prepare.
-  assert.equal(view.find({ label: 'Who prepares' })?.props.value, 'claude')
-  await view.press({ text: 'Cancel' })
-  assert.equal(view.find({ testId: 'sheet' }), null)
-  assert.deepEqual(inputsOf(calls, 'epic.prepare'), [])
+  assert.deepEqual(inputsOf(calls, 'project.page'), [{ project: HANDLE, root: ROOT }])
+  await view.press({ testId: `open-spec:doc-${30}` })
+  await view.press({ testId: 'open-spec:epic-9' })
+  assert.deepEqual(view.host.callsOf('shell.openExternal'), [
+    { url: `https://me.conport.app/t/pers/p/${HANDLE}/documents?id=30` },
+    { url: `https://me.conport.app/t/pers/p/${HANDLE}/documents?id=22` }
+  ])
+  assert.deepEqual(view.refusals, [])
+  await view.unmount()
+  // Without the address of the project nothing can be opened, and its refusal is not in the way.
+  const away = stub({ 'project.page': () => ({ ok: false, error: NO_KEY }) })
+  view = await mount(panel, { host: away.host })
+  assert.equal(view.find({ testId: `open-spec:doc-${30}` })?.props.disabled, true)
+  assert.equal(view.findAll({ type: 'Callout' }).some((c) => c.props.tone === 'danger'), false)
 })
 
-test('only an agent that takes a positional request is offered in the sheet', async () => {
-  const withOpencode = [...AGENTS.agents, { id: 'opencode', label: 'OpenCode', command: 'opencode', found: true }]
-  const { host } = stub({ 'agents.get': () => ok({ agents: withOpencode, preparer: 'opencode' }) })
+test('the light read runs every minute while the panel is visible, a changed set starts the full read, the full read every 10 minutes', async () => {
+  const clock = clockAndTimer()
+  try {
+    let taken: TakenList = TAKEN
+    const { host, calls } = stub({ 'sdd.list': () => ok(SDD_LIST), 'sdd.taken': () => ok(taken) })
+    view = await mount(panel, { host })
+    assert.equal(clock.at(POLL_TAKEN_MS).length, 1)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 1)
+    // The same set: only the light read.
+    clock.tick(POLL_TAKEN_MS)
+    await settle(view)
+    assert.deepEqual(inputsOf(calls, 'sdd.taken'), [{ project: HANDLE, root: ROOT }])
+    assert.equal(inputsOf(calls, 'sdd.list').length, 1)
+    // Idea 41 taken in another client: marked by the light read alone, no full read.
+    taken = { ...TAKEN, taken: [...TAKEN.taken, { id: 41, kind: 'task', updated_at: '2026-11-16T11:00:00Z' }] }
+    clock.tick(POLL_TAKEN_MS)
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 1)
+    assert.match(String(view.find({ testId: 'idea:41' })?.props.description), /^In progress · updated /)
+    assert.deepEqual(buttonsOf(view, 'idea:41'), ['Take over'])
+    // A number the list does not hold: the full read.
+    taken = { ...TAKEN, taken: [...TAKEN.taken, { id: 99, kind: 'task', updated_at: '2026-11-16T11:00:00Z' }] }
+    clock.tick(POLL_TAKEN_MS)
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 2)
+    // Hidden, the panel reads nothing.
+    taken = TAKEN
+    await view.setVisible(false)
+    const hidden = inputsOf(calls, 'sdd.taken').length
+    clock.tick(POLL_TAKEN_MS)
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.taken').length, hidden)
+    await view.setVisible(true)
+    await until(() => inputsOf(calls, 'sdd.list').length === 3)
+    await view.settled()
+    // Ten minutes after the last full read the tick reads the whole list, not the light one.
+    const light = inputsOf(calls, 'sdd.taken').length
+    clock.tick(FULL_READ_MS)
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 4)
+    assert.equal(inputsOf(calls, 'sdd.taken').length, light)
+    // A minute short of the next ten: the light read again.
+    clock.tick(FULL_READ_MS - POLL_TAKEN_MS)
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 4)
+    assert.equal(inputsOf(calls, 'sdd.taken').length, light + 1)
+    // The timer goes with the panel.
+    await view.unmount()
+    view = undefined
+    assert.equal(clock.at(POLL_TAKEN_MS).length, 0)
+  } finally {
+    clock.restore()
+  }
+})
+
+test('a tick while a read runs starts nothing', async () => {
+  const clock = clockAndTimer()
+  try {
+    const pending: Array<() => void> = []
+    const { host, calls } = stub({
+      'sdd.taken': () => new Promise((resolve) => pending.push(() => resolve(ok(TAKEN))))
+    })
+    view = await mount(panel, { host })
+    clock.tick(POLL_TAKEN_MS)
+    await until(() => pending.length === 1)
+    // The light read is still out: the next tick, and one ten minutes on, start no other read.
+    clock.tick(POLL_TAKEN_MS)
+    clock.tick(FULL_READ_MS)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(inputsOf(calls, 'sdd.taken').length, 1)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 1)
+    pending[0]?.()
+    await settle(view)
+    // Once it is back, the next tick reads again: ten minutes have passed, the whole list.
+    clock.tick()
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 2)
+  } finally {
+    clock.restore()
+  }
+})
+
+test('a full read that fails while a list is shown keeps the list and says why above it; the next good read clears it', async () => {
+  const clock = clockAndTimer()
+  try {
+    let answer: Result<SddList> = ok(SDD_LIST)
+    const { host, calls } = stub({ 'sdd.list': () => answer, 'sdd.taken': () => ok(TAKEN) })
+    view = await mount(panel, { host })
+    const danger = (): string | undefined => view?.findAll({ type: 'Callout' }).find((c) => c.props.tone === 'danger')?.props.title as string | undefined
+    assert.ok(view.find({ testId: 'idea:41' }))
+    assert.equal(danger(), undefined)
+    // The full read of the ten minutes fails: the list stays, the refusal above it.
+    answer = { ok: false, error: NO_KEY }
+    clock.tick(FULL_READ_MS)
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 2)
+    assert.ok(view.find({ testId: 'idea:41' }))
+    assert.deepEqual(buttonsOf(view, 'idea:41'), ['Brainstorm'])
+    assert.equal(danger(), 'No ConPort API key')
+    // The list shown goes on with its light read.
+    clock.tick(POLL_TAKEN_MS)
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.taken').length, 1)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 2)
+    // The next full read that succeeds clears the refusal.
+    answer = ok(SDD_LIST)
+    clock.tick(FULL_READ_MS)
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 3)
+    assert.equal(danger(), undefined)
+    assert.ok(view.find({ testId: 'idea:41' }))
+  } finally {
+    clock.restore()
+  }
+})
+
+test('a full read that fails while a sheet or the Take over question is open keeps it open', async () => {
+  const clock = clockAndTimer()
+  try {
+    let answer: Result<SddList> = ok(SDD_LIST)
+    const { host } = stub({ 'sdd.list': () => answer, 'sdd.taken': () => ok(TAKEN) })
+    view = await mount(panel, { host })
+    // The Brainstorm sheet of idea 41 is open when the full read of the ten minutes fails.
+    await view.press({ testId: 'brainstorm:task-41' })
+    assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Brainstorm “Rotate the backup key”')
+    answer = { ok: false, error: NO_KEY }
+    clock.tick(FULL_READ_MS)
+    await settle(view)
+    assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Brainstorm “Rotate the backup key”')
+    await view.press({ text: 'Cancel' })
+    // The question Take over asks of idea 43 stays as well.
+    await view.press({ testId: 'take-over:task-43' })
+    assert.equal(view.find({ testId: 'take-over' })?.props.title, 'Another session may be working on it')
+    clock.tick(FULL_READ_MS)
+    await settle(view)
+    assert.equal(view.find({ testId: 'take-over' })?.props.title, 'Another session may be working on it')
+  } finally {
+    clock.restore()
+  }
+})
+
+test('a first full read that fails, with no list shown, shows the refusal and no section', async () => {
+  const { host } = stub({ 'sdd.list': () => ({ ok: false, error: NO_KEY }) })
   view = await mount(panel, { host })
-  await tab(view, 'prepare')
-  await view.press({ testId: 'prepare:9' })
-  const radio = view.find({ label: 'Who prepares' })
-  assert.deepEqual((radio?.props.options as Array<{ value: string }>).map((o) => o.value), ['claude', 'codex'])
-  // The one remembered for the project cannot take a task: the first that can is taken.
-  assert.equal(radio?.props.value, 'claude')
+  assert.equal(view.findAll({ type: 'Callout' }).find((c) => c.props.tone === 'danger')?.props.title, 'No ConPort API key')
+  assert.equal(view.find({ testId: 'idea:41' }), null)
 })
 
-test('with no agent found nothing can be prepared or handed', async () => {
+test('an epic In work started from its spec on this host shows the terminal it inherits on its screen, never Take over', async () => {
+  // Plan & build from this Orca: the plan imported, the epic taken by the session that planned it.
+  const { host, calls } = stub({
+    'sdd.list': () => ok(SDD_LIST),
+    'row.session': (input: RowTarget) => ok({ terminal: input.row.kind === 'epic' && input.row.id === 7 ? 'term-spec' : null }),
+    'terminal.show': () => ok(null),
+    'epic.start': () => started()
+  })
+  view = await mount(panel, { host })
+  // The epic goes with its spec and its idea: the worker finds the terminal it inherits.
+  assert.ok((inputsOf(calls, 'row.session') as RowTarget[]).some(({ row }) => row.kind === 'epic' && row.id === 7 && row.spec === 18))
+  // The row opens the screen on a press, and holds no button: Show terminal is there.
+  assert.deepEqual(buttonsOf(view, 'epic:7'), [])
+  await view.press({ testId: 'epic:7' })
+  // Its own session is not seen; the one of its spec is alive: Show terminal and Start again.
+  assert.equal(view.find({ text: 'Take over' }), null)
+  assert.equal(view.find({ testId: 'session-alive' })?.text, text.inheritedNotice(7))
+  await view.press({ text: 'Show terminal' })
+  const shown = { project: HANDLE, root: ROOT, row: { kind: 'epic', id: 7, spec: 18, idea: null } }
+  assert.deepEqual(inputsOf(calls, 'terminal.show'), [shown])
+  assert.ok(view.find({ text: 'Start again' }))
+  // No second lead session was opened.
+  assert.deepEqual(inputsOf(calls, 'epic.start'), [])
+  await view.unmount()
+  // Without that terminal the epic taken elsewhere offers Take over on its screen.
+  const elsewhere = stub({ 'sdd.list': () => ok(SDD_LIST) })
+  view = await mount(panel, { host: elsewhere.host })
+  await view.press({ testId: 'epic:7' })
+  assert.ok(view.find({ text: 'Take over' }))
+})
+
+test('a taken epic In work ready to merge says so, on its row and on its screen', async () => {
+  const list = copy(SDD_LIST)
+  const ready = list.in_work[0] as InWorkRow
+  ready.ready = true
+  ready.progress = { open: 0, total: 6 }
+  assert.equal(ready.status, 'IN_PROGRESS')
+  const { host } = stub({ 'sdd.list': () => ok(list) })
+  view = await mount(panel, { host })
+  assert.equal(view.find({ testId: 'epic:7' })?.props.description, 'Ready to merge · 6 of 6 closed')
+  await view.press({ testId: 'epic:7' })
+  assert.equal(view.find({ testId: 'epic-state' })?.text, 'Ready to merge · 6 of 6 closed')
+  await view.press({ text: '← Sections' })
+  // Not ready, the same epic says when its session last changed it.
+  await view.unmount()
+  view = await mount(panel, { host: stub({ 'sdd.list': () => ok(SDD_LIST) }).host })
+  assert.match(String(view.find({ testId: 'epic:7' })?.props.description), /^In progress · updated /)
+})
+
+test('an idea the list holds in review or blocked and the light read names taken offers Take over', async () => {
+  const clock = clockAndTimer()
+  try {
+    const list = copy(SDD_LIST)
+    const blocked = list.ideas.find((t) => t.id === 47) as IdeaRow
+    assert.equal(blocked.status, 'BLOCKED')
+    const taken: TakenList = {
+      ...TAKEN,
+      taken: [...TAKEN.taken, { id: 42, kind: 'task', updated_at: '2026-11-16T11:00:00Z' }, { id: 47, kind: 'task', updated_at: '2026-11-16T11:05:00Z' }]
+    }
+    const { host, calls } = stub({ 'sdd.list': () => ok(list), 'sdd.taken': () => ok(taken) })
+    view = await mount(panel, { host })
+    assert.deepEqual([buttonsOf(view, 'idea:42'), buttonsOf(view, 'idea:47')], [['Review'], []])
+    clock.tick(POLL_TAKEN_MS)
+    await settle(view)
+    // The light read is newer than the stage of the list: both are taken, and no full read was needed.
+    assert.equal(inputsOf(calls, 'sdd.list').length, 1)
+    for (const id of [42, 47]) {
+      assert.deepEqual(buttonsOf(view, `idea:${id}`), ['Take over'], String(id))
+      assert.match(String(view.find({ testId: `idea:${id}` })?.props.description), /^In progress · updated /)
+    }
+  } finally {
+    clock.restore()
+  }
+})
+
+test('a read asked while another runs waits for it: a start of its own never reads beside the timer', async () => {
+  const clock = clockAndTimer()
+  try {
+    const pending: Array<() => void> = []
+    let hold = false
+    const { host, calls } = stub({
+      'sdd.list': () => (hold ? new Promise((resolve) => pending.push(() => resolve(ok(LIST)))) : ok(LIST)),
+      'idea.start': () => ok({ terminal: 'term-1' })
+    })
+    view = await mount(panel, { host })
+    await view.press({ testId: 'brainstorm:task-41' })
+    // The full read of the timer is out.
+    hold = true
+    clock.tick(FULL_READ_MS)
+    await until(() => pending.length === 1)
+    hold = false
+    const starting = view.press({ text: 'Open in terminal' })
+    await until(() => inputsOf(calls, 'idea.start').length === 1)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // The read after the start waits for the one of the timer.
+    assert.equal(inputsOf(calls, 'sdd.list').length, 2)
+    pending[0]?.()
+    await starting
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 3)
+  } finally {
+    clock.restore()
+  }
+})
+
+test('after a full read that failed the timer reads the whole list again ten minutes on', async () => {
+  const clock = clockAndTimer()
+  try {
+    let fail = true
+    const { host, calls } = stub({ 'sdd.list': () => (fail ? { ok: false, error: NO_KEY } : ok(LIST)) })
+    view = await mount(panel, { host })
+    assert.equal(view.find({ testId: 'section:in_work' }), null)
+    // Within the ten minutes nothing is read: no light read of a list there is none of.
+    clock.tick(POLL_TAKEN_MS)
+    await settle(view)
+    assert.deepEqual([inputsOf(calls, 'sdd.list').length, inputsOf(calls, 'sdd.taken').length], [1, 0])
+    fail = false
+    clock.tick(FULL_READ_MS)
+    await settle(view)
+    assert.equal(inputsOf(calls, 'sdd.list').length, 2)
+    assert.ok(view.find({ testId: 'section:in_work' }))
+  } finally {
+    clock.restore()
+  }
+})
+
+test('the Take over question goes once the row is released', async () => {
+  const clock = clockAndTimer()
+  try {
+    let listed = SDD_LIST
+    let taken: TakenList = TAKEN
+    const { host } = stub({ 'sdd.list': () => ok(listed), 'sdd.taken': () => ok(taken) })
+    view = await mount(panel, { host })
+    await view.press({ testId: 'take-over:task-43' })
+    assert.ok(view.find({ testId: 'take-over' }))
+    // Still taken by the light read: the question stays.
+    clock.tick(POLL_TAKEN_MS)
+    await settle(view)
+    assert.ok(view.find({ testId: 'take-over' }))
+    // Released: the light read no longer names it, and the list read again holds it to do.
+    taken = { ...TAKEN, taken: TAKEN.taken.filter((row) => row.id !== 43) }
+    listed = { ...SDD_LIST, ideas: SDD_LIST.ideas.map((t) => (t.id === 43 ? { ...t, status: 'TODO' as const } : t)) }
+    clock.tick(POLL_TAKEN_MS)
+    await settle(view)
+    assert.equal(view.find({ testId: 'take-over' }), null)
+    assert.equal(view.persisted.plugin.takeOver ?? null, null)
+    assert.deepEqual(buttonsOf(view, 'idea:43'), ['Brainstorm'])
+  } finally {
+    clock.restore()
+  }
+})
+
+test('skipped proposals are counted under Ideas', async () => {
+  const { host } = stub({})
+  view = await mount(panel, { host })
+  assert.equal(view.find({ testId: 'skipped-proposals' })?.text, '1 proposal is not shown: its state line cannot be read')
+  await view.unmount()
+  const none = stub({ 'sdd.list': () => ok({ ...LIST, skipped_proposals: [] }) })
+  view = await mount(panel, { host: none.host })
+  assert.equal(view.find({ testId: 'skipped-proposals' }), null)
+})
+
+test('no Prepare or Write plan anywhere', async () => {
+  const { host, calls } = stub({})
+  view = await mount(panel, { host, persisted: { plugin: { sections: { outside: false } } } })
+  const screens = [textOf(view)]
+  await view.press({ testId: `plan:doc-${30}` })
+  screens.push(textOf(view))
+  await view.press({ text: 'Cancel' })
+  await view.press({ testId: 'epic:15' })
+  screens.push(textOf(view))
+  for (const screen of screens) doesNotMatch(screen, /Prepare|Write plan|Ready to run/)
+  assert.deepEqual(calls.filter((c) => /^(epics|tasks)\.list$|^epic\.prepare$/.test(c.name)), [])
+  assert.equal(view.find({ type: 'Tabs' }), null)
+})
+
+test('Start and the screen of an epic In work work as before', async () => {
+  const { host, calls } = stub({ 'epic.start': () => started() })
+  view = await mount(panel, { host })
+  assert.deepEqual(buttonsOf(view, 'epic:15'), [])
+  await view.press({ testId: 'epic:15' })
+  assert.equal(headingOf(view, 2), 'Offline mode')
+  assert.deepEqual(view.findAll({ type: 'Badge' }).map((b) => b.text), ['Spec ✓', 'Plan ✓'])
+  await view.press({ text: 'Start' })
+  assert.deepEqual((inputsOf(calls, 'epic.start') as Array<{ epic: number }>).map(({ epic }) => epic), [15])
+  await view.press({ text: '← Sections' })
+  assert.ok(view.find({ testId: 'section:in_work' }))
+})
+
+test('with no agent found nothing can be brainstormed, planned or handed', async () => {
   const none = AGENTS.agents.map((a) => ({ ...a, found: false }))
   const { host } = stub({ 'agents.get': () => ok({ agents: none }) })
-  view = await mount(panel, { host })
-  await tab(view, 'prepare')
-  assert.equal(view.find({ testId: 'prepare:9' })?.props.disabled, true)
+  view = await mount(panel, { host, persisted: { plugin: { sections: { outside: false } } } })
+  for (const id of ['brainstorm:task-41', `brainstorm:doc-${301}`, `plan:doc-${30}`, 'review:42', 'fix:46', 'hand:51']) {
+    assert.equal(view.find({ testId: id })?.props.disabled, true, id)
+  }
+  // Declining starts no agent: it stays.
+  assert.equal(view.find({ testId: `decline:doc-${301}` })?.props.disabled, false)
   // One line: what is wrong — the action, lowercase after the dash.
   assert.match(
     textOf(view),
     /Only Claude Code, Codex and Cursor take a task, and none of them was found — start the agent in this Orca workspace and press Refresh\./
   )
-  await tab(view, 'tasks')
-  assert.equal(view.find({ testId: 'hand:41' })?.props.disabled, true)
-  assert.equal(view.find({ testId: 'review:42' })?.props.disabled, true)
 })
 
-test('a refused prepare says why and keeps the sheet', async () => {
-  const { host } = stub({
-    'epic.prepare': () => ({ ok: false, error: { code: 'epic_ready', message: 'Epic 9 is already ready to run', action: 'Press Refresh and start it.' } })
-  })
+test('only an agent that takes a positional request is offered in the sheet', async () => {
+  const withOpencode = [...AGENTS.agents, { id: 'opencode', label: 'OpenCode', command: 'opencode', found: true }]
+  const { host } = stub({ 'agents.get': () => ok({ agents: withOpencode, launcher: 'opencode' }) })
   view = await mount(panel, { host })
-  await tab(view, 'prepare')
-  await view.press({ testId: 'prepare:9' })
-  await view.press({ text: 'Open in terminal' })
-  const box = view.findAll({ type: 'Callout' }).find((c) => c.props.tone === 'danger')
-  assert.equal(box?.props.title, 'Epic 9 is already ready to run')
-  assert.ok(view.find({ testId: 'sheet' }))
+  await view.press({ testId: 'brainstorm:task-41' })
+  const radio = view.find({ label: 'Who brainstorms' })
+  assert.deepEqual((radio?.props.options as Array<{ value: string }>).map((o) => o.value), ['claude', 'codex'])
+  // The one remembered for the project cannot take a task: the first that can is taken.
+  assert.equal(radio?.props.value, 'claude')
 })
 
-test('a folder or unbound project offers no prepare', async () => {
-  // A folder in focus is never chosen; an unbound project asks for its binding, no epics.
-  const { host, calls } = stub({ 'projects.list': () => ok([{ ...NOTES, focused: true }, unfocused(DOCS)]) })
-  view = await mount(panel, { host })
-  assert.equal(view.find({ text: 'Prepare' }), null)
-  await view.press({ text: 'Bind' })
-  assert.ok(view.find({ label: 'ConPort project' }))
-  assert.equal(view.find({ type: 'Tabs' }), null)
-  assert.deepEqual(inputsOf(calls, 'epics.list'), [])
-  assert.deepEqual(inputsOf(calls, 'tasks.list'), [])
-})
-
-test('the epics are read again when the panel becomes visible', async () => {
+test('the project is read again when the panel becomes visible', async () => {
   const { host, calls } = stub({})
   view = await mount(panel, { host })
-  assert.equal(inputsOf(calls, 'epics.list').length, 1)
+  assert.equal(inputsOf(calls, 'sdd.list').length, 1)
   await view.setVisible(false)
-  assert.equal(inputsOf(calls, 'epics.list').length, 1)
+  assert.equal(inputsOf(calls, 'sdd.list').length, 1)
   await view.setVisible(true)
-  await until(() => inputsOf(calls, 'epics.list').length === 2)
-  assert.deepEqual(inputsOf(calls, 'epics.list').at(-1), { project: 'shop-api', root: ROOT })
-  // Refresh reads them again too: an epic prepared meanwhile becomes runnable.
+  await until(() => inputsOf(calls, 'sdd.list').length === 2)
+  assert.deepEqual(inputsOf(calls, 'sdd.list').at(-1), { project: 'shop-api', root: ROOT })
+  // Refresh reads it again too: a spec written meanwhile shows.
   await view.press({ label: 'Refresh' })
-  assert.equal(inputsOf(calls, 'epics.list').length, 3)
-  assert.equal(inputsOf(calls, 'tasks.list').length, 3)
+  assert.equal(inputsOf(calls, 'sdd.list').length, 3)
 })
 
-test('a prepare answer for a project left is not drawn in the chosen one', async () => {
+test('a start answer for a project left is not drawn in the chosen one', async () => {
   const pending: Array<() => void> = []
   const { host } = stub({
     'projects.list': () => ok([SHOP, BILLING]),
-    'epic.prepare': () => new Promise((resolve) => pending.push(() => resolve(ok({ terminal: 'term-1' }))))
+    'idea.start': () => new Promise((resolve) => pending.push(() => resolve(ok({ terminal: 'term-1' }))))
   })
   view = await mount(panel, { host })
-  await tab(view, 'prepare')
-  await view.press({ testId: 'prepare:10' })
-  const preparing = view.press({ text: 'Open in terminal' })
+  await view.press({ testId: 'brainstorm:task-41' })
+  const starting = view.press({ text: 'Open in terminal' })
   await until(() => pending.length === 1)
   await openPicker(view, BILLING.root)
   const toBilling = view.press({ testId: `project:${BILLING.root}` })
   await new Promise((resolve) => setTimeout(resolve, 30))
   pending[0]?.()
-  await Promise.all([preparing, toBilling])
+  await Promise.all([starting, toBilling])
   assert.equal(pickerOf(view)?.props.title, 'Billing')
-  doesNotMatch(textOf(view), /conport prepare 10/)
+  doesNotMatch(textOf(view), /conport idea 41/)
 })
 
 test('an agent picked by hand in the sheet stays when the panel comes back into view', async () => {
   const { host, calls } = stub({})
   view = await mount(panel, { host })
-  await tab(view, 'prepare')
-  await view.press({ testId: 'prepare:9' })
-  await view.select({ label: 'Who prepares' }, 'codex')
+  await view.press({ testId: `plan:doc-${30}` })
+  await view.select({ label: 'Who plans and builds' }, 'codex')
   await view.press({ text: 'Cancel' })
   await view.setVisible(false)
   await view.setVisible(true)
   await until(() => inputsOf(calls, 'agents.get').length === 2)
   await view.settled()
-  await view.press({ testId: 'prepare:10' })
-  assert.equal(view.find({ label: 'Who prepares' })?.props.value, 'codex')
+  await view.press({ testId: 'brainstorm:task-41' })
+  assert.equal(view.find({ label: 'Who brainstorms' })?.props.value, 'codex')
 })
 
-test('an open sheet stays when the panel comes back into view while its task or epic is still listed', async () => {
-  let listed = TASK_LIST.tasks
-  const { host, calls } = stub({ 'tasks.list': () => ok(listed) })
+test('an open sheet stays while its row still wants it, when the panel comes back into view and when it opens again', async () => {
+  let listed = LIST
+  const { host, calls } = stub({ 'sdd.list': () => ok(listed) })
   view = await mount(panel, { host })
-  await tab(view, 'tasks')
-  await view.press({ testId: 'hand:41' })
-  await view.select({ label: 'Who takes the task' }, 'codex')
+  await view.press({ testId: 'brainstorm:task-41' })
+  await view.select({ label: 'Who brainstorms' }, 'codex')
   const away = async (): Promise<void> => {
     const before = inputsOf(calls, 'agents.get').length
     await (view as TestPanel).setVisible(false)
@@ -1474,108 +2025,57 @@ test('an open sheet stays when the panel comes back into view while its task or 
     await (view as TestPanel).settled()
   }
   await away()
-  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Hand to agent “Rotate the backup key”')
-  assert.equal(view.find({ label: 'Who takes the task' })?.props.value, 'codex')
-  // Taken meanwhile: the task is no longer one to hand, the sheet closes.
-  listed = TASK_LIST.tasks.map((t) => (t.id === 41 ? { ...t, status: 'IN_PROGRESS' as const } : t))
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Brainstorm “Rotate the backup key”')
+  assert.equal(view.find({ label: 'Who brainstorms' })?.props.value, 'codex')
+  // Kept for the next run of the panel, with the root of its project.
+  const kept = view.persisted.plugin.sheet
+  assert.deepEqual(kept, { root: ROOT, sheet: { kind: 'idea', idea: LIST.ideas[0] } })
+  await view.unmount()
+  view = await mount(panel, { host, persisted: { plugin: { sheet: kept } } })
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Brainstorm “Rotate the backup key”')
+  assert.equal(view.find({ label: 'Who brainstorms' })?.props.value, 'claude')
+  // Taken to review meanwhile: the idea is past brainstorming, the sheet closes.
+  listed = { ...LIST, ideas: LIST.ideas.map((t) => (t.id === 41 ? { ...t, status: 'REVIEW' as const } : t)) }
   await away()
   assert.equal(view.find({ testId: 'sheet' }), null)
-  // A sheet of an epic stays while the epic still lacks what it is prepared for, and closes once it can start.
-  await tab(view, 'prepare')
-  await view.press({ testId: 'prepare:9' })
+  // A sheet of a spec stays while the spec waits for its plan, and closes once it is In work.
+  listed = LIST
+  await view.press({ label: 'Refresh' })
+  await view.press({ testId: `plan:doc-${30}` })
+  listed = { ...LIST, specs: LIST.specs.filter((s) => s.doc !== 30) }
   await away()
-  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Write plan “Archive export”')
+  assert.equal(view.find({ testId: 'sheet' }), null)
+  // A sheet kept for another project is not shown in this one.
   await view.unmount()
-  const ready = { ...EPIC_LIST, epics: EPIC_LIST.epics.map((e) => (e.id === 9 ? { ...e, runnable: true, reason: null } : e)) }
-  let epics = EPIC_LIST
-  const second = stub({ 'epics.list': () => ok(epics) })
-  view = await mount(panel, { host: second.host, persisted: { plugin: { tab: 'prepare' } } })
-  await view.press({ testId: 'prepare:9' })
-  epics = ready
-  const before = inputsOf(second.calls, 'agents.get').length
-  await view.setVisible(false)
-  await view.setVisible(true)
-  await until(() => inputsOf(second.calls, 'agents.get').length === before + 1)
-  await view.settled()
+  view = await mount(panel, { host: stub({}).host, persisted: { plugin: { sheet: { ...(kept as object), root: BILLING.root } } } })
   assert.equal(view.find({ testId: 'sheet' }), null)
 })
 
-test('choosing another project closes the sheet', async () => {
+test('choosing another project closes the sheet, and Refresh does too', async () => {
   const { host } = stub({ 'projects.list': () => ok([SHOP, BILLING]) })
   view = await mount(panel, { host })
-  await tab(view, 'tasks')
-  await view.press({ testId: 'hand:41' })
+  await view.press({ testId: 'brainstorm:task-41' })
   await pick(view, BILLING.root)
+  assert.equal(view.find({ testId: 'sheet' }), null)
+  await pick(view, ROOT)
+  await view.press({ testId: 'brainstorm:task-41' })
+  await view.press({ label: 'Refresh' })
   assert.equal(view.find({ testId: 'sheet' }), null)
 })
 
-test('the tasks tab marks a bug', async () => {
-  const tasks = TASK_LIST.tasks.map((task) => ({ ...task, kind: task.id <= 43 ? 'bug' : 'task' }))
-  const { host } = stub({ 'tasks.list': () => ok(tasks) })
-  view = await mount(panel, { host })
-  await tab(view, 'tasks')
-  assert.deepEqual(itemsIn(view, 'In review'), [
-    ['42 · Compare the metrics after the release', 'Bug · In review']
-  ])
-  assert.deepEqual(itemsIn(view, 'In progress'), [['43 · Check the backups', 'Bug · In progress']])
-  assert.deepEqual(itemsIn(view, 'To do'), [
-    ['41 · Rotate the backup key', 'Bug · High · not started'],
-    ['44 · Simplify the search answer', 'Medium · not started'],
-    ['45 · Hints on an empty search', 'Low · not started']
-  ])
-})
-
-test('the tasks tab keeps the order of the list', async () => {
-  // Server order takes precedence over the displayed priority.
-  const tasks = [
-    { id: 51, title: 'Background chore', kind: 'task', status: 'TODO', priority: 5, changes_requested: false },
-    { id: 52, title: 'Fix the outage', kind: 'task', status: 'TODO', priority: 1, changes_requested: false },
-    { id: 53, title: 'Under review', kind: 'task', status: 'REVIEW', priority: 4, changes_requested: false },
-    { id: 54, title: 'Being done', kind: 'task', status: 'IN_PROGRESS', priority: 2, changes_requested: false },
-    { id: 55, title: 'Rotate the key', kind: 'task', status: 'TODO', priority: 2, changes_requested: false },
-    { id: 56, title: 'Simplify', kind: 'task', status: 'TODO', priority: 3, changes_requested: false },
-    { id: 57, title: 'Hints', kind: 'task', status: 'TODO', priority: 4, changes_requested: false },
-    { id: 58, title: 'Back from review', kind: 'task', status: 'IN_PROGRESS', priority: 3, changes_requested: true }
-  ]
-  const { host } = stub({ 'tasks.list': () => ok(tasks) })
-  view = await mount(panel, { host })
-  assert.equal(tabsOf(view)[2], 'Tasks · 8')
-  await tab(view, 'tasks')
-  assert.deepEqual(groupsOf(view), ['In review', 'In progress', 'To do'])
-  const rows = (label: string) => itemsIn(view as TestPanel, label)
-  assert.deepEqual(rows('In review'), [['53 · Under review', 'In review']])
-  assert.deepEqual(rows('In progress'), [
-    ['54 · Being done', 'In progress'],
-    ['58 · Back from review', 'Changes requested']
-  ])
-  // A task the review sent back is fixed by an agent; one an agent is at is its own.
-  assert.equal(view.find({ testId: 'fix:58' })?.text, 'Fix')
-  assert.equal(view.find({ testId: 'fix:54' }), null)
-  assert.deepEqual(rows('To do'), [
-    ['51 · Background chore', 'Idle · not started'],
-    ['52 · Fix the outage', 'Critical · not started'],
-    ['55 · Rotate the key', 'High · not started'],
-    ['56 · Simplify', 'Medium · not started'],
-    ['57 · Hints', 'Low · not started']
-  ])
-  // Review asks for a check, todo for an agent; a task in progress is the agent's own.
-  assert.equal(view.find({ testId: 'review:53' })?.text, 'Review')
-  assert.equal(view.find({ testId: 'hand:52' })?.text, 'Hand to agent')
-  assert.equal(view.find({ testId: 'hand:54' }), null)
-  assert.equal(view.find({ testId: 'review:54' }), null)
-})
-
-test('a task is handed to the agent chosen in the sheet, to do, to review or to fix', async () => {
-  const sentBack = TASK_LIST.tasks.map((t) => (t.id === 43 ? { ...t, changes_requested: true } : t))
+test('an idea and a task of an epic outside SDD are handed to review or to fix, a task to do', async () => {
+  const list = copy(LIST)
+  const task = list.outside[0]?.tasks[0]
+  if (task) task.kind = 'bug'
   const { host, calls } = stub({
-    'agents.get': () => ok({ agents: AGENTS.agents, preparer: 'codex' }),
-    'tasks.list': () => ok(sentBack),
+    'sdd.list': () => ok(list),
+    'agents.get': () => ok({ agents: AGENTS.agents, launcher: 'codex' }),
     'task.hand': () => ok({ terminal: 'term-1' })
   })
-  view = await mount(panel, { host })
-  await tab(view, 'tasks')
-  await view.press({ testId: 'hand:41' })
-  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Hand to agent “Rotate the backup key”')
+  view = await mount(panel, { host, persisted: { plugin: { sections: { outside: false } } } })
+  assert.equal(view.find({ testId: 'task:51' })?.props.description, 'Bug · High · not started')
+  await view.press({ testId: 'hand:51' })
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Hand to agent “Compare the latency”')
   assert.equal(view.find({ label: 'Who takes the task' })?.props.value, 'codex')
   // The agent works on a branch of its own and commits there; merging it is the person's.
   assert.match(textOf(view), /Does it on its own branch, in a separate working copy beside the repository, checks it and commits/)
@@ -1583,65 +2083,78 @@ test('a task is handed to the agent chosen in the sheet, to do, to review or to 
   assert.match(textOf(view), /The work goes to a separate branch of the task, and you merge it\./)
   await view.press({ testId: 'review:42' })
   assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Review “Compare the metrics after the release”')
-  // The reviewer checks that branch, and closes the task it approves only with the person's yes.
   assert.match(textOf(view), /Reviews the branch from the report/)
-  assert.match(textOf(view), /on approval, with your consent, closes the task/)
   await view.select({ label: 'Who reviews' }, 'claude')
   await view.press({ text: 'Open in terminal' })
-  assert.match(textOf(view), /Review of task 42 is open in terminal “conport review 42” of repository “Shop”: the agent writes its verdict to the task's journal and, on approval, closes the task with your consent/)
-  // A task the review sent back: the agent goes on in its branch with the findings of the review.
-  await view.press({ testId: 'fix:43' })
-  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Fix “Check the backups”')
+  assert.match(textOf(view), /Review of task 42 is open in terminal “conport review 42” of repository “Shop”/)
+  await view.press({ testId: 'fix:46' })
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Fix “Simplify the search answer”')
   assert.match(textOf(view), /Continues on the task's branch, fixes and commits/)
-  await view.select({ label: 'Who fixes' }, 'codex')
   await view.press({ text: 'Open in terminal' })
-  assert.match(textOf(view), /Fixes of task 43 are open in terminal “conport fix 43” of repository “Shop”/)
-  assert.deepEqual(inputsOf(calls, 'task.hand').at(-1), { project: HANDLE, root: ROOT, task: 43, agent: 'codex', mode: 'fix' })
-  assert.deepEqual(inputsOf(calls, 'task.hand').slice(0, 2), [
-    { project: HANDLE, root: ROOT, task: 41, agent: 'codex', mode: 'do' },
-    { project: HANDLE, root: ROOT, task: 42, agent: 'claude', mode: 'review' }
+  assert.deepEqual(inputsOf(calls, 'task.hand'), [
+    { project: HANDLE, root: ROOT, task: 51, agent: 'codex', mode: 'do' },
+    { project: HANDLE, root: ROOT, task: 42, agent: 'claude', mode: 'review' },
+    { project: HANDLE, root: ROOT, task: 46, agent: 'claude', mode: 'fix' }
   ])
 })
 
-test('a task list the cli cannot give is said in the tasks tab only', async () => {
-  const { host } = stub({ 'tasks.list': () => ({ ok: false, error: NO_KEY }) })
+test('a list the cli cannot give is said once, with no section drawn', async () => {
+  const { host, calls } = stub({ 'sdd.list': () => ({ ok: false, error: NO_KEY }) })
   view = await mount(panel, { host })
-  assert.deepEqual(tabsOf(view), ['Ready to run · 2', 'Prepare · 2', 'Tasks'])
-  assert.equal(view.findAll({ type: 'Callout' }).filter((c) => c.props.tone === 'danger').length, 0)
-  await tab(view, 'tasks')
-  assert.equal(view.findAll({ type: 'Callout' }).find((c) => c.props.tone === 'danger')?.props.title, 'No ConPort API key')
+  const boxes = view.findAll({ type: 'Callout' }).filter((c) => c.props.tone === 'danger')
+  assert.deepEqual(boxes.map((c) => c.props.title), ['No ConPort API key'])
+  assert.equal(view.find({ testId: 'section:in_work' }), null)
+  // Nothing else is read for a project the CLI could not read.
+  assert.deepEqual([inputsOf(calls, 'agents.get'), inputsOf(calls, 'row.session')], [[], []])
+})
+
+test('a folder or unbound project offers no section', async () => {
+  // A folder in focus is never chosen; an unbound project asks for its binding, no stages.
+  const { host, calls } = stub({ 'projects.list': () => ok([{ ...NOTES, focused: true }, unfocused(DOCS)]) })
+  view = await mount(panel, { host })
+  assert.equal(view.find({ testId: 'section:ideas' }), null)
+  await view.press({ text: 'Bind' })
+  assert.ok(view.find({ label: 'ConPort project' }))
+  assert.deepEqual(inputsOf(calls, 'sdd.list'), [])
 })
 
 const SOURCES = join(dirname(fileURLToPath(import.meta.url)))
-const CYRILLIC = /[\u0400-\u04FF]/
+const CYRILLIC = /[Ѐ-ӿ]/
 
 test('no panel text is in russian', async () => {
   // Nothing the panel or the worker can show is: the sources hold no cyrillic letter.
-  for (const file of ['panel.tsx', 'text.ts', 'worker.ts', 'cli.ts']) {
+  for (const file of ['panel.tsx', 'text.ts', 'worker.ts', 'cli.ts', 'sdd.ts']) {
     doesNotMatch(readFileSync(join(SOURCES, file), 'utf8'), CYRILLIC, file)
   }
-  // Nor does any screen drawn: each tab, the epic in each state of its session, the sheet.
+  // Nor does any screen drawn: the sections, each window, the epic in each state of its session.
+  // The proposal of the list is titled in English here: its title is the team's, not the panel's.
+  const list = { ...SDD_LIST, proposals: [{ doc: 301, title: 'Search in the archive', author: 'Anna' }] }
   const screens: string[] = []
   const sessions = [session(), SESSION_COPY, SESSION_ALIVE, session({ harness: 'codex' })]
   for (const state of sessions) {
-    const { host } = stub({ 'epic.session': () => ok(state), 'epic.start': () => started() })
-    view = await mount(panel, { host, persisted: at(7) })
+    const { host } = stub({ 'sdd.list': () => ok(list), 'epic.session': () => ok(state), 'epic.start': () => started() })
+    view = await mount(panel, { host, persisted: { plugin: { sections: { outside: false } } } })
+    screens.push(textOf(view))
+    for (const id of ['brainstorm:task-41', `brainstorm:doc-${301}`, `decline:doc-${301}`, `plan:doc-${30}`, 'fix:46']) {
+      await view.press({ testId: id })
+      screens.push(textOf(view))
+      await view.press({ text: 'Cancel' })
+    }
+    await view.press({ testId: 'take-over:task-43' })
+    screens.push(textOf(view))
+    await view.press({ text: 'Cancel' })
+    await view.press({ testId: 'epic:7' })
     screens.push(textOf(view))
     if (view.find({ text: 'Start again' })) {
       await view.press({ text: 'Start again' })
       screens.push(textOf(view))
       await view.press({ text: 'Cancel' })
-    } else if (startOf(view)?.props.disabled === false) {
-      await view.press({ text: 'Start' })
+    } else if (view.find({ text: 'Take over' })) {
+      await view.press({ text: 'Take over' })
       screens.push(textOf(view))
+      await view.press({ text: 'Cancel' })
     }
-    await view.press({ text: '← Epics' })
-    for (const value of ['launch', 'prepare', 'tasks'] as const) {
-      await tab(view, value)
-      screens.push(textOf(view))
-    }
-    await view.press({ testId: 'hand:41' })
-    screens.push(textOf(view))
+    await view.press({ text: '← Sections' })
     await view.unmount()
     view = undefined
   }

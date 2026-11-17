@@ -1,5 +1,5 @@
 // The panel <-> worker contract, declared once: src/panel.tsx and src/worker.ts both read it.
-// The data shapes are the JSON the `conport epic ... --json` and `conport task list --json`
+// The data shapes are the JSON the `conport sdd list --json` and `conport epic ... --json`
 // commands print.
 
 /** A refusal of the conport CLI (or of orca), shown to the person as is. */
@@ -85,23 +85,123 @@ export interface EpicList {
 
 export type EpicSummary = EpicList['epics'][number]
 
-/** A task of the project outside its epics, as `conport task list` names it. */
-export interface OutsideTask {
+/** The status of a root task of ConPort that a row of `conport sdd list` shows. */
+export type OpenStatus = 'TODO' | 'IN_PROGRESS' | 'REVIEW' | 'BLOCKED'
+
+/**
+ * An idea — a root task with no spec — or an open task of an epic outside SDD, as
+ * `conport sdd list` names it. `updated_at` comes with a task in progress: the time of its last
+ * change, which a session that leads it renews.
+ */
+export interface IdeaRow {
   id: number
   kind: 'task' | 'bug'
   title: string
-  status: 'TODO' | 'IN_PROGRESS' | 'REVIEW'
+  status: OpenStatus
+  updated_at?: string
   /** 1 critical … 5 idle. */
   priority: number
-  /** In progress after a review that asked for changes: its fixes are due. */
+  /** In progress after a review that asked for changes: its fixes are due, it is not taken. */
   changes_requested: boolean
 }
 
-/** `conport task list --json`: the open tasks of the project outside its epics, in server order. */
-export interface TaskList {
+/** An open epic with its spec and its plan: the section In work. */
+export interface InWorkRow {
+  id: number
+  title: string
+  status: EpicTaskStatus
+  updated_at?: string
+  /** The tasks of the epic: those not closed, of all. */
+  progress: { open: number; total: number }
+  milestone: Milestone | null
+  /** Every task closed and the newest readiness entry of the core says it is ready to merge. */
+  ready: boolean
+  /** Why the epic cannot start (several specs or plans); null when it can. */
+  reason: string | null
+  /** The spec of the epic; the epic inherits the terminal its plan was written in. */
+  spec: number | null
+  /** The idea the spec clarifies; the epic inherits the terminal of that idea. */
+  idea: number | null
+}
+
+/**
+ * A spec without a plan: a document tagged `awaiting-plan` (`epic` null, `status` null), or an
+ * epic with a spec and no plan (`epic` its number, `status` its status).
+ */
+export interface SpecRow {
+  doc: number
+  title: string
+  /** The idea the spec clarifies; null when it clarifies none. */
+  idea: number | null
+  /** The priority of that idea; 3 without one. */
+  priority: number
+  epic: number | null
+  status: EpicTaskStatus | null
+  updated_at?: string
+}
+
+/** A proposal of the team waiting for an answer. */
+export interface ProposalRow {
+  doc: number
+  title: string
+  author: string | null
+}
+
+/** An open epic without a spec, with its open tasks: the section Outside SDD. */
+export interface OutsideRow {
+  id: number
+  title: string
+  status: EpicTaskStatus
+  updated_at?: string
+  milestone: Milestone | null
+  progress: { open: number; total: number }
+  tasks: IdeaRow[]
+}
+
+/** `conport sdd list --json`: the work of the project by the stages of SDD, each in the order to show it. */
+export interface SddList {
   /** The handle of the project. */
   project: string
-  tasks: OutsideTask[]
+  in_work: InWorkRow[]
+  specs: SpecRow[]
+  ideas: IdeaRow[]
+  proposals: ProposalRow[]
+  /** Proposals whose state line the CLI could not read, with why. */
+  skipped_proposals: Array<{ doc: number; reason: string }>
+  outside: OutsideRow[]
+  /**
+   * The open root tasks the list read and shows in no section (an idea a spec clarifies): the
+   * light read can name them. Absent from the answer of a CLI older than the field.
+   */
+  unlisted?: number[]
+}
+
+/** `conport sdd list --taken --json`: the root tasks in progress, read without documents or links. */
+export interface TakenList {
+  /** The handle of the project. */
+  project: string
+  taken: Array<{ id: number; kind: 'task' | 'bug' | 'epic'; updated_at: string }>
+}
+
+/**
+ * A row of the panel a terminal can belong to: an idea, a spec document — with the idea it
+ * clarifies, whose terminal it inherits — an epic — with the spec and the idea it was made from,
+ * whose terminals it inherits — or a task outside SDD.
+ */
+export type RowRef =
+  | { kind: 'idea'; id: number }
+  | { kind: 'spec'; doc: number; idea: number | null }
+  | { kind: 'epic'; id: number; spec: number | null; idea: number | null }
+  | { kind: 'task'; id: number }
+
+/**
+ * Names a row of a project. `project` is the handle `conport sdd list` answered with: the
+ * terminals of the rows are kept under it, and a name is refused with `project_not_handle`.
+ */
+export interface RowTarget {
+  project: string
+  root: string
+  row: RowRef
 }
 
 /** What an agent is handed a task for: to do it, to review the work done, or to fix what the review found. */
@@ -127,8 +227,9 @@ export interface Roles {
 export interface EpicRef {
   /**
    * The project: its handle, or the name the person wrote where the CLI resolves it. The
-   * requests that read what a start remembered — `epic.session` and `terminal.show` — take the
-   * handle only (`project` of `EpicList`) and refuse anything else with `project_not_handle`.
+   * requests that read what a start remembered — `epic.session`, and `row.session` and
+   * `terminal.show` by `RowTarget` — take the handle only (`project` of `SddList`) and refuse
+   * anything else with `project_not_handle`.
    */
   project: string
   root: string
@@ -184,22 +285,53 @@ declare module 'orca' {
     'project.set': { input: { root: string; project: string }; output: Result<RepoContext> }
     /** Forgets the remembered project, so the panel asks again. */
     'project.forget': { input: { root: string }; output: Result<RepoContext> }
-    'epics.list': { input: { project: string; root: string }; output: Result<EpicList> }
-    /** The open tasks of the project outside its epics. */
-    'tasks.list': { input: { project: string; root: string }; output: Result<OutsideTask[]> }
+    /** The work of the project by the stages of SDD: `conport sdd list`. */
+    'sdd.list': { input: { project: string; root: string }; output: Result<SddList> }
+    /** The root tasks in progress, the light read the panel checks its taken rows by: `conport sdd list --taken`. */
+    'sdd.taken': { input: { project: string; root: string }; output: Result<TakenList> }
     /**
-     * The agent kinds the CLI knows and the agent last chosen in this project to prepare an epic
-     * or to take a task.
+     * The address of the project in the ConPort dashboard, in the team that holds it: a spec is
+     * opened there. `project` is the handle `sdd.list` answered with.
+     */
+    'project.page': { input: { project: string; root: string }; output: Result<{ url: string }> }
+    /**
+     * The agent kinds the CLI knows and the agent last chosen in this project to start an idea or
+     * a spec or to take a task. The choice an earlier release kept under `prepare:<project>` is
+     * read once and moved to `launcher:<project>`.
      */
     'agents.get': {
       input: { project: string; root: string }
-      output: Result<{ agents: AgentKind[]; preparer?: string | null }>
+      output: Result<{ agents: AgentKind[]; launcher?: string | null }>
     }
     /**
-     * Opens a terminal in the repository root with the chosen agent, told to prepare the epic
-     * with the person: the spec it lacks, the plan, their upload to ConPort.
+     * Opens a terminal in the repository root with the chosen agent, told to work the idea through
+     * with the person. The agent and the terminal are remembered for the project and the idea.
      */
-    'epic.prepare': { input: EpicRef & { agent: string }; output: Result<{ terminal: string }> }
+    'idea.start': { input: { project: string; root: string; task: number; agent: string }; output: Result<{ terminal: string }> }
+    /**
+     * Accepts a proposal of the team — its idea is found or made — and starts that idea as
+     * `idea.start` does. A refused accept opens nothing.
+     */
+    'proposal.start': {
+      input: { project: string; root: string; doc: number; agent: string }
+      output: Result<{ terminal: string; task: number }>
+    }
+    /**
+     * Opens a terminal in the repository root with the chosen agent, told to write the plan of a
+     * spec — a document or the epic that has it — and build it; the branch of the main working copy
+     * is the base of the epic. The agent and the terminal are remembered for the project and the row.
+     */
+    'spec.start': {
+      input: { project: string; root: string; target: { doc: number } | { epic: number }; agent: string }
+      output: Result<{ terminal: string }>
+    }
+    /** Declines a proposal of the team with the reason the person wrote; no agent is started. */
+    'proposal.decline': { input: { project: string; root: string; doc: number; reason: string }; output: Result<null> }
+    /**
+     * The terminal of the live session of a row, found anew: the one this host opened for it while
+     * an agent runs in it; an epic's own session first, then the one of its spec, then of its idea.
+     */
+    'row.session': { input: RowTarget; output: Result<{ terminal: string | null }> }
     /**
      * Starts an epic by the SDD skill with the harness chosen for it: finds or creates the working
      * copy of the branch `epic-<N>` and opens the harness there with the task of the epic. The
@@ -212,7 +344,7 @@ declare module 'orca' {
     /**
      * The harness and the roles of an epic, and whether its session is alive: orca is asked for
      * its working copies and terminals, ConPort and git are not asked. `project` is the handle the
-     * epic list answered with; a name is refused, since a start remembers by the handle.
+     * SDD list answered with; a name is refused, since a start remembers by the handle.
      */
     'epic.session': { input: EpicRef; output: Result<EpicSession> }
     /** Every task of an epic in ConPort, by its number, the cancelled ones last. */
@@ -220,13 +352,13 @@ declare module 'orca' {
     /** The subagent types of a harness, read in the repository root. */
     'subagents.get': { input: { root: string; harness: string }; output: Result<SubagentList> }
     /**
-     * Brings the terminal of the epic's live session to the front, found anew by the rule of
-     * `epic.session`; refused when the epic has no live session. `project` is the handle.
+     * Brings the terminal of a row's live session to the front, found anew by the rule of
+     * `row.session`; refused when the row has none. `project` is the handle.
      */
-    'terminal.show': { input: EpicRef; output: Result<null> }
+    'terminal.show': { input: RowTarget; output: Result<null> }
     /**
-     * Opens a terminal in the repository root with the chosen agent, told to do a task outside
-     * the epics or to review the work done on it.
+     * Opens a terminal in the repository root with the chosen agent, told to do a task of an epic
+     * outside SDD, or to review or fix the work done on it or on an idea.
      */
     'task.hand': {
       input: { project: string; root: string; task: number; agent: string; mode: HandMode }

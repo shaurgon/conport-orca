@@ -77,7 +77,7 @@ export function promptText(args: readonly string[]): string {
 }
 
 /** What the fake conport answers when `conport prompt <command>` refuses with `code`, in the CLI's English. */
-export function promptRefused(command: 'epic' | 'prepare' | 'task', code: string): FakeAnswer {
+export function promptRefused(command: 'epic' | 'task' | 'idea' | 'spec', code: string): FakeAnswer {
   const message = `${code.replace(/_/g, ' ')}, as the CLI words it`
   const action = 'do what the CLI says'
   return {

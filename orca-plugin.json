@@ -1,9 +1,9 @@
 {
   "manifestVersion": 2,
   "id": "conport-orca",
-  "name": "ConPort Epics",
-  "version": "0.8.0",
-  "description": "Controls ConPort projects from Orca: the epics of a project by milestone, the start of an epic in a terminal of the chosen harness with a subagent type per role, an agent to prepare an epic without a spec or plan, and the tasks outside the epics handed to an agent to do or to review.",
+  "name": "ConPort SDD",
+  "version": "0.9.0",
+  "description": "Controls ConPort projects from Orca by SDD stage: epics in work with their spec and plan, specs waiting for a plan, ideas and team proposals not worked through, and epics outside SDD; brainstorms an idea, plans and builds a spec, and starts the lead session of an epic in a terminal of the chosen harness.",
   "license": "MIT",
   "engines": {
     "orca": ">=1.4.251"
@@ -15,7 +15,7 @@
     "panels": [
       {
         "id": "epics",
-        "title": "ConPort Epics",
+        "title": "ConPort SDD",
         "icon": "layers",
         "entry": "src/panel.tsx",
         "ui": "components"

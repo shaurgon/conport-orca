@@ -1,6 +1,6 @@
 // What the panel says. Shared by the worker and the panel: no Node imports.
 import { FIXER_TYPE } from './cli'
-import type { EpicSummary, EpicTask, EpicTaskStatus, HandMode, Milestone, OutsideTask, Roles } from './protocol'
+import type { EpicTask, EpicTaskStatus, HandMode, IdeaRow, InWorkRow, Milestone, Roles, RowRef } from './protocol'
 
 /** The word for `n` things: `one` for exactly 1, `many` for any other number. */
 export function plural(n: number, one: string, many: string): string {
@@ -30,7 +30,7 @@ export interface EpicState {
  * Where an epic stands in ConPort: ready to merge by the readiness entry of the core; in progress
  * once the epic is taken or a task is closed; else not started.
  */
-export function epicState(epic: EpicSummary): EpicState {
+export function epicState(epic: Pick<InWorkRow, 'progress' | 'ready' | 'status'>): EpicState {
   const { open, total } = epic.progress
   const closed = total - open
   if (epic.ready) return { line: `Ready to merge · ${closed} of ${total} closed`, share: null, closed, total }
@@ -41,27 +41,77 @@ export function epicState(epic: EpicSummary): EpicState {
   return { line: `Not started · ${total} ${plural(total, 'task', 'tasks')}`, share: null, closed, total }
 }
 
-/** What an epic that cannot start lacks, said on its row in the tab Prepare. */
-export const PREPARE_STATE = {
-  spec: 'No spec',
-  plan: 'Spec, no plan',
-  other: 'Not ready to run for another reason'
-} as const
+/** A section of the panel: its key, its title, the caption under it and whether it opens unfolded. */
+export interface Section {
+  key: 'in_work' | 'specs' | 'ideas' | 'outside'
+  title: string
+  caption: string
+  open: boolean
+}
 
-/** What Prepare does for an epic without a spec or a plan. */
-export const PREPARE_HINT =
-  'The agent talks the epic through with you and writes its spec and plan; then the epic appears in the Ready to run tab.'
+/** The sections of the panel in order: what is closer to a release first. */
+export const SECTIONS: readonly Section[] = [
+  { key: 'in_work', title: 'In work', caption: 'spec + plan', open: true },
+  { key: 'specs', title: 'Specs', caption: 'spec, no plan', open: true },
+  { key: 'ideas', title: 'Ideas', caption: 'not worked through', open: true },
+  { key: 'outside', title: 'Outside SDD', caption: 'no spec', open: false }
+]
+
+/** What an empty section says. */
+export const EMPTY_SECTION: Record<Section['key'], string> = {
+  in_work: 'No epic has its spec and plan.',
+  specs: 'No spec waits for its plan.',
+  ideas: 'No idea or proposal waits to be worked through.',
+  outside: 'Every open epic has a spec.'
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/**
+ * A row taken by a session, with the time of its last change in local time: the hour alone
+ * today, the day and the month before it on another day.
+ */
+export function updatedLine(iso: string, now: Date): string {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return 'In progress'
+  const time = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+  const today = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate()
+  return `In progress · updated ${today ? time : `${at.getDate()} ${MONTHS[at.getMonth()]} ${time}`}`
+}
+
+/** What Take over asks before it starts the task of a row another session may hold. */
+export const TAKE_OVER_CONFIRM = 'Another session may be working on it'
+
+/** Under the question of Take over: what the start does. */
+export const TAKE_OVER_NOTE = 'A new agent starts with the same task and goes on by the journal of the task and its links.'
+
+/** Under the section Ideas: the proposals whose state line the CLI could not read. */
+export function skippedLine(n: number): string {
+  return `${n} ${plural(n, 'proposal is', 'proposals are')} not shown: ${plural(n, 'its', 'their')} state line cannot be read`
+}
 
 /** What to do about an agent that cannot be told its task: choose one of those that can. */
-export const PREPARE_AGENTS_ACTION = 'Choose Claude Code, Codex or Cursor.'
+export const TASK_AGENTS_ACTION = 'Choose Claude Code, Codex or Cursor.'
 
 /** Why no agent can be chosen in the sheet: none of those that take a task is found. */
 export const NO_TASK_AGENT = 'Only Claude Code, Codex and Cursor take a task, and none of them was found'
 
-/** Where the preparation of an epic went, and what to do once it is over. */
-export const prepareNotice = (epic: number, project: string): string =>
-  `Preparation of epic ${epic} is open in terminal “conport prepare ${epic}” of repository “${project}”: ` +
-  'the agent is waiting for you there. Once the plan is in ConPort, press Refresh.'
+/** Where the brainstorm of an idea went. */
+export const ideaNotice = (task: number, project: string): string =>
+  `Brainstorm of task ${task} is open in terminal “conport idea ${task}” of repository “${project}”: the agent is waiting for you there.`
+
+/** Where the plan of a spec is written: named by its document, or by the epic that has it. */
+export function specNotice(target: SpecTarget, project: string): string {
+  const name = 'doc' in target ? `doc-${target.doc}` : String(target.epic)
+  const what = 'doc' in target ? `Spec doc-${target.doc}` : `The spec of epic ${target.epic}`
+  return (
+    `${what} is open in terminal “conport spec ${name}” of repository “${project}”: the agent writes the plan with you, ` +
+    'then builds the epic. Once the plan is imported, the epic is In work.'
+  )
+}
+
+/** A proposal declined: no agent was started. */
+export const declineNotice = (doc: number): string => `Proposal doc-${doc} is declined with your reason.`
 
 /** Where a task handed to an agent went, and what comes of it. */
 export function handNotice(task: number, mode: HandMode, project: string): string {
@@ -82,6 +132,13 @@ export function handNotice(task: number, mode: HandMode, project: string): strin
 /** Where the agent of an epic is: said once it is started, and on the screen of an epic whose session is alive. */
 export const startNotice = (epic: number): string =>
   `The agent of epic ${epic} is open in the terminal of working copy epic-${epic}; it asks its questions there`
+
+/**
+ * On the screen of an epic whose own session is not seen, while the terminal of its spec or its
+ * idea — whose agent planned it and builds it — is open on this host.
+ */
+export const inheritedNotice = (epic: number): string =>
+  `The agent that planned epic ${epic} is open in its terminal on this host; it builds the epic and asks its questions there`
 
 /** On the screen of an epic whose live session an earlier release of the panel opened in the repository root. */
 export const rootSessionNotice = (epic: number): string =>
@@ -185,24 +242,30 @@ export const PRIORITY: Record<number, string> = {
 /** The marker for a behaviour defect on its task row. */
 export const BUG_LABEL = 'Bug'
 
-/** A task outside the epics on its row: its priority while it waits, else its stage. */
-export function taskState(task: OutsideTask): string {
+/** A task or an idea on its row: its priority while it waits, else its stage. */
+export function taskState(task: Pick<IdeaRow, 'status' | 'priority' | 'changes_requested'>): string {
   if (task.status === 'REVIEW') return 'In review'
+  if (task.status === 'BLOCKED') return 'Blocked'
   if (task.status === 'IN_PROGRESS') return task.changes_requested ? 'Changes requested' : 'In progress'
   return `${PRIORITY[task.priority] ?? 'No priority'} · not started`
 }
 
 /** What the agent opened from the sheet does, step by step. */
 export const SHEET_STEPS = {
-  spec: [
-    'Talks the epic through with you and writes the spec',
-    'After your yes, uploads it to ConPort',
-    "Writes the plan, links the epic's tasks, imports the plan"
+  idea: [
+    'Reads the idea, its journal and its links, and takes it',
+    'Works it through with you: a small fix, a look into something, or a design',
+    'A design ends in a spec you approve; then it asks: Writing the plan means building right after it. Plan and build now?'
   ],
-  plan: [
-    "Reads the epic's spec and talks the plan through with you",
-    "Links the epic's open tasks to the plan",
-    'After your yes, imports the plan into ConPort'
+  proposal: [
+    'Takes the proposal into design: finds or files its idea',
+    'Works the idea through with you: a small fix, a look into something, or a design',
+    'A design ends in a spec you approve; then it asks: Writing the plan means building right after it. Plan and build now?'
+  ],
+  spec: [
+    'Reads the spec and the idea it clarifies',
+    'Writes the plan with you; after your yes, imports it, and the epic is created in the milestone you name',
+    'Builds the epic by SDD in the working copy of its branch'
   ],
   do: [
     'Starts the task',
@@ -240,32 +303,63 @@ const REFRESH = 'Press Refresh.'
  */
 export const REFUSED = {
   epicNotFound: (epic: number): FailureText => ({ what: `Epic ${epic} is not in the project`, action: REFRESH }),
-  epicReady: (epic: number): FailureText => ({ what: `Epic ${epic} is already ready to run`, action: 'Press Refresh and start it.' }),
-  epicNotPreparable: (epic: number): FailureText => ({
-    what: `Epic ${epic} is not ready to run for a reason preparation cannot fix`,
-    action: 'Press Refresh and look at the epic in the Prepare tab.'
-  }),
   epicNotReady: (epic: number): FailureText => ({
     what: `Epic ${epic} has no spec or no plan`,
-    action: 'Prepare the epic in the Prepare tab.'
+    action: 'Plan it from the Specs section.'
   }),
   roleInvalid: { what: 'The subagent type is not a plain name', action: 'Choose a type for the role from the list.' },
   agentCannotPrepare: (noun: 'agent' | 'harness', agent: string): FailureText => ({
     what: `The ${noun} “${agent}” does not take a task at start`,
-    action: PREPARE_AGENTS_ACTION
+    action: TASK_AGENTS_ACTION
   }),
-  taskNotFound: (task: number): FailureText => ({ what: `Task ${task} is not among the open tasks outside the epics`, action: REFRESH }),
+  taskNotFound: (task: number): FailureText => ({ what: `Task ${task} is not among the open tasks of the panel`, action: REFRESH }),
   taskMoved: (task: number, mode: HandMode): FailureText => ({
     what: { do: `Task ${task} is already in progress`, review: `Task ${task} is not waiting for review`, fix: `Task ${task} is not waiting for fixes` }[mode],
     action: REFRESH
-  })
+  }),
+  notAnIdea: (task: number): FailureText => ({ what: `Task ${task} is not an idea: it is an epic or a task of an epic`, action: REFRESH }),
+  ideaTaken: (task: number): FailureText => ({ what: `Task ${task} is past brainstorming: it is in review, blocked or closed`, action: REFRESH }),
+  ideaNotFound: (task: number): FailureText => ({ what: `Task ${task} is not in the project`, action: REFRESH }),
+  noSpec: (target: SpecTarget): FailureText => ({
+    what: 'doc' in target ? `Document doc-${target.doc} is not a spec` : `Epic ${target.epic} has no spec`,
+    action: REFRESH
+  }),
+  specPlanned: (target: SpecTarget): FailureText => ({
+    what: 'doc' in target ? `Spec doc-${target.doc} already has its plan: its epic is In work` : `Epic ${target.epic} already has its plan: it is In work`,
+    action: REFRESH
+  }),
+  notAProposal: (doc: number): FailureText => ({ what: `Document doc-${doc} is not a proposal`, action: REFRESH }),
+  proposalClosed: (doc: number): FailureText => ({ what: `Proposal doc-${doc} is no longer open: it was accepted or declined`, action: REFRESH }),
+  proposalAccepted: (doc: number): FailureText => ({ what: `Proposal doc-${doc} already has its idea, and the idea is taken up`, action: REFRESH }),
+  reasonMissing: { what: 'No reason is given', action: 'Write why the proposal is declined.' },
+  /** A row whose terminal this host does not have alive. */
+  sessionGone: (row: RowRef): FailureText => {
+    const name = { idea: 'Task', task: 'Task', epic: 'Epic', spec: 'Spec doc-' }[row.kind]
+    const number = row.kind === 'spec' ? `${name}${row.doc}` : `${name} ${row.id}`
+    return { what: `${number} has no live session: its terminal is closed or its agent has exited`, action: REFRESH }
+  }
 }
+
+/** A spec named by its document, or by the epic that has it. */
+export type SpecTarget = { doc: number } | { epic: number }
 
 /** What the worker asked `conport prompt` for: the request a refusal of it answers. */
 export type PromptSubject =
   | { command: 'epic'; epic: number; harness: string }
-  | { command: 'prepare'; epic: number }
   | { command: 'task'; task: number; mode: HandMode }
+  | { command: 'idea'; task: number }
+  | { command: 'spec'; target: SpecTarget }
+
+/**
+ * A refusal of `conport proposal accept|decline` in the panel's words; undefined for a code the
+ * panel words by `refusalText`.
+ */
+export function proposalRefusal(code: string, doc: number): FailureText | undefined {
+  if (code === 'not_a_proposal') return REFUSED.notAProposal(doc)
+  if (code === 'proposal_closed') return REFUSED.proposalClosed(doc)
+  if (code === 'proposal_accepted') return REFUSED.proposalAccepted(doc)
+  return undefined
+}
 
 /**
  * A refusal of `conport prompt` in the words the worker says it in when it finds the reason
@@ -273,14 +367,12 @@ export type PromptSubject =
  * a terminal: the panel tells the person in its own words.
  */
 export function promptRefusal(code: string, subject: PromptSubject): FailureText | undefined {
+  if (subject.command === 'idea') return ideaRefusal(code, subject.task)
+  if (subject.command === 'spec') return specRefusal(code, subject.target)
   const epic = subject.command === 'task' ? undefined : subject.epic
   switch (code) {
     case 'epic_not_found':
       return epic === undefined ? undefined : REFUSED.epicNotFound(epic)
-    case 'epic_ready':
-      return epic === undefined ? undefined : REFUSED.epicReady(epic)
-    case 'epic_not_preparable':
-      return epic === undefined ? undefined : REFUSED.epicNotPreparable(epic)
     case 'epic_not_ready':
       return epic === undefined ? undefined : REFUSED.epicNotReady(epic)
     case 'role_invalid':
@@ -291,6 +383,34 @@ export function promptRefusal(code: string, subject: PromptSubject): FailureText
       return subject.command === 'task' ? REFUSED.taskNotFound(subject.task) : undefined
     case 'task_moved':
       return subject.command === 'task' ? REFUSED.taskMoved(subject.task, subject.mode) : undefined
+    default:
+      return undefined
+  }
+}
+
+/** A refusal of `conport prompt idea` in the panel's words. */
+function ideaRefusal(code: string, task: number): FailureText | undefined {
+  switch (code) {
+    case 'not_an_idea':
+      return REFUSED.notAnIdea(task)
+    case 'idea_taken':
+      return REFUSED.ideaTaken(task)
+    case 'task_not_found':
+      return REFUSED.ideaNotFound(task)
+    default:
+      return undefined
+  }
+}
+
+/** A refusal of `conport prompt spec` in the panel's words. */
+function specRefusal(code: string, target: SpecTarget): FailureText | undefined {
+  switch (code) {
+    case 'no_spec':
+      return REFUSED.noSpec(target)
+    case 'spec_planned':
+      return REFUSED.specPlanned(target)
+    case 'task_not_found':
+      return 'epic' in target ? REFUSED.epicNotFound(target.epic) : undefined
     default:
       return undefined
   }
@@ -369,8 +489,6 @@ export const OWN_REFUSALS: ReadonlySet<string> = new Set([
   'root_not_open',
   'empty_project',
   'epic_not_found',
-  'epic_ready',
-  'epic_not_preparable',
   'task_not_found',
   'task_moved',
   'agent_not_found',
@@ -379,6 +497,14 @@ export const OWN_REFUSALS: ReadonlySet<string> = new Set([
   'role_invalid',
   'root_detached',
   'epic_branch_taken',
+  'not_an_idea',
+  'idea_taken',
+  'no_spec',
+  'spec_planned',
+  'not_a_proposal',
+  'proposal_accepted',
+  'proposal_closed',
+  'reason_missing',
   'git_failed',
   'bad_output',
   'worker'

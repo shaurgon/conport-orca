@@ -1,8 +1,17 @@
-// Answers of `conport epic ... --json` and `conport task list --json` in the shape the CLI prints
-// them, one of `orca worktree list --json` in the shape Orca prints it, and answers of the worker
-// about an epic, for the tests and the check scenarios.
+// Answers of `conport sdd list --json` and `conport epic ... --json` in the shape the CLI prints them, one of `orca worktree list --json` in the shape Orca prints it, and
+// answers of the worker about an epic, for the tests and the check scenarios.
 import { DEFAULT_ROLES } from '../src/cli'
-import type { AgentKind, EpicList, EpicSession, EpicTask, Milestone, Refusal, SubagentList, TaskList } from '../src/protocol'
+import type {
+  AgentKind,
+  EpicList,
+  EpicSession,
+  EpicTask,
+  Milestone,
+  Refusal,
+  SddList,
+  SubagentList,
+  TakenList
+} from '../src/protocol'
 
 export const HANDLE = 'prk7m2qx9d'
 
@@ -62,22 +71,73 @@ export const EPIC_LIST: EpicList = {
   ]
 }
 
-export const EPIC_WITHOUT_PLAN: EpicList = {
+/**
+ * `conport sdd list --json`: an epic In work taken from another client, one waiting to start
+ * made from spec 20 of idea 5, a tagged spec and an epic with a spec and no plan, ideas in each
+ * state a row shows, a proposal, one proposal the CLI could not read and a service epic.
+ */
+export const SDD_LIST: SddList = {
   project: HANDLE,
-  epics: EPIC_LIST.epics.filter((e) => e.id === 9)
+  in_work: [
+    {
+      id: 7,
+      title: 'Search by meaning',
+      status: 'IN_PROGRESS',
+      updated_at: '2026-11-16T09:12:00Z',
+      progress: { open: 5, total: 6 },
+      milestone: RELEASE,
+      ready: false,
+      reason: null,
+      spec: 18,
+      idea: null
+    },
+    {
+      id: 15,
+      title: 'Offline mode',
+      status: 'TODO',
+      progress: { open: 4, total: 4 },
+      milestone: null,
+      ready: false,
+      reason: null,
+      spec: 20,
+      idea: 5
+    }
+  ],
+  specs: [
+    { doc: 30, title: 'Archive export', idea: 6, priority: 2, epic: null, status: null },
+    { doc: 22, title: 'Audit log', idea: null, priority: 3, epic: 9, status: 'TODO' }
+  ],
+  ideas: [
+    { id: 41, kind: 'task', title: 'Rotate the backup key', status: 'TODO', priority: 2, changes_requested: false },
+    { id: 43, kind: 'bug', title: 'Check the backups', status: 'IN_PROGRESS', updated_at: '2026-11-16T10:00:00Z', priority: 3, changes_requested: false },
+    { id: 46, kind: 'task', title: 'Simplify the search answer', status: 'IN_PROGRESS', updated_at: '2026-11-15T18:30:00Z', priority: 3, changes_requested: true },
+    { id: 42, kind: 'task', title: 'Compare the metrics after the release', status: 'REVIEW', priority: 3, changes_requested: false },
+    { id: 47, kind: 'task', title: 'Read the old exports', status: 'BLOCKED', priority: 4, changes_requested: false }
+  ],
+  proposals: [{ doc: 301, title: 'Предложение: Search in the archive', author: 'Anna' }],
+  skipped_proposals: [{ doc: 302, reason: 'no state line' }],
+  outside: [
+    {
+      id: 50,
+      title: 'Checks after the release',
+      status: 'TODO',
+      milestone: null,
+      progress: { open: 1, total: 1 },
+      tasks: [{ id: 51, kind: 'task', title: 'Compare the latency', status: 'TODO', priority: 2, changes_requested: false }]
+    }
+  ]
 }
 
-export const EMPTY_LIST: EpicList = { project: HANDLE, epics: [] }
+/** A project with nothing in any stage. */
+export const EMPTY_SDD: SddList = { project: HANDLE, in_work: [], specs: [], ideas: [], proposals: [], skipped_proposals: [], outside: [] }
 
-/** The tasks of the project outside its epics, in server order, as `conport task list` prints them. */
-export const TASK_LIST: TaskList = {
+/** `conport sdd list --taken --json`: the root tasks in progress, the epic and the ideas of SDD_LIST. */
+export const TAKEN: TakenList = {
   project: HANDLE,
-  tasks: [
-    { id: 41, title: 'Rotate the backup key', kind: 'task', status: 'TODO', priority: 2, changes_requested: false },
-    { id: 42, title: 'Compare the metrics after the release', kind: 'task', status: 'REVIEW', priority: 3, changes_requested: false },
-    { id: 43, title: 'Check the backups', kind: 'task', status: 'IN_PROGRESS', priority: 3, changes_requested: false },
-    { id: 44, title: 'Simplify the search answer', kind: 'task', status: 'TODO', priority: 3, changes_requested: false },
-    { id: 45, title: 'Hints on an empty search', kind: 'task', status: 'TODO', priority: 4, changes_requested: false }
+  taken: [
+    { id: 7, kind: 'epic', updated_at: '2026-11-16T09:12:00Z' },
+    { id: 43, kind: 'bug', updated_at: '2026-11-16T10:00:00Z' },
+    { id: 46, kind: 'task', updated_at: '2026-11-15T18:30:00Z' }
   ]
 }
 

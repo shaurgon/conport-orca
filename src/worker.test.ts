@@ -17,8 +17,9 @@ import {
   HERDR_COPY,
   herdrWorktreeList,
   NO_KEY,
+  SDD_LIST,
   SUBAGENTS,
-  TASK_LIST
+  TAKEN
 } from '../test/fixtures'
 import {
   type FakeAnswer,
@@ -32,8 +33,19 @@ import {
   worktreeList,
   worktreeRow
 } from '../test/fake'
-import { DEFAULT_ROLES, HANDLE_FORM, epicPromptArgs, preparePromptArgs, taskPromptArgs } from './cli'
-import type { AgentKind, EpicSession, EpicTask, HandMode, Result, Roles } from './protocol'
+import {
+  DEFAULT_ROLES,
+  HANDLE_FORM,
+  epicPromptArgs,
+  ideaPromptArgs,
+  proposalAcceptArgs,
+  proposalDeclineArgs,
+  sddListArgs,
+  sddTakenArgs,
+  specPromptArgs,
+  taskPromptArgs
+} from './cli'
+import type { AgentKind, EpicSession, EpicTask, HandMode, Result, Roles, RowRef } from './protocol'
 import { HARNESS_MISSING_ACTION, refusalText } from './text'
 
 const SWITCHED = { match: 'terminal switch --terminal term-1 ', stdout: json({ ok: true, result: {} }) }
@@ -84,9 +96,12 @@ function pendingTimers() {
 }
 
 test('the worker polls nothing and shows no status bar item', async () => {
-  // An epic with a live session and tasks in progress: the worker reads them when asked, never by itself.
+  // An epic with a live session and tasks in progress: the worker reads them when asked, never by
+  // itself. The panel times its reads of the list; the worker keeps no timer of its own.
   const f = fake(
     [
+      { match: 'sdd list --taken', stdout: json(TAKEN) },
+      { match: 'sdd list', stdout: json(SDD_LIST) },
       { match: 'epic list', stdout: json(EPIC_LIST) },
       { match: 'epic agents', stdout: json(AGENTS) },
       { match: 'api tasks list', stdout: json({ tasks: EPIC_TASKS, total: EPIC_TASKS.length }) },
@@ -105,22 +120,24 @@ test('the worker polls nothing and shows no status bar item', async () => {
   try {
     const worker = await mountWorker(f.worker, { host })
     const epic = { project: HANDLE, root: f.root, epic: 7 }
+    const row: RowRef = { kind: 'epic', id: 7, spec: null, idea: null }
     const answers = [
-      await worker.request('epics.list', { project: HANDLE, root: f.root }),
+      await worker.request('sdd.list', { project: HANDLE, root: f.root }),
+      await worker.request('sdd.taken', { project: HANDLE, root: f.root }),
       await worker.request('agents.get', { project: HANDLE, root: f.root }),
       await worker.request('epic.session', epic),
       await worker.request('epic.tasks', epic),
       await worker.request('subagents.get', { root: f.root, harness: 'claude' }),
-      await worker.request('terminal.show', epic),
+      await worker.request('terminal.show', { project: HANDLE, root: f.root, row }),
       await worker.request('epic.start', { ...epic, harness: 'claude', roles: DEFAULT_ROLES })
     ]
     // Every request did its work: a refusal would leave nothing to schedule and prove nothing.
-    assert.deepEqual(answers.map((answer) => answer.ok), [true, true, true, true, true, true, true], JSON.stringify(answers))
+    assert.deepEqual(answers.map((answer) => answer.ok), [true, true, true, true, true, true, true, true], JSON.stringify(answers))
     // Nothing is left scheduled once the answers are in: no read waits its turn, however far off.
     assert.deepEqual(timers.delays(), [])
     // Each read of ConPort was asked for by one request: none is repeated behind it.
     assert.deepEqual(f.conportCalls().map((call) => call.slice(0, 2).join(' ')), [
-      'epic list', 'epic agents', 'api tasks', 'epic subagents', 'epic list', 'epic agents', 'prompt epic'
+      'sdd list', 'sdd list', 'epic agents', 'api tasks', 'epic subagents', 'epic list', 'epic agents', 'prompt epic'
     ])
     assert.deepEqual(worker.posts, [])
     assert.deepEqual(host.callsOf('statusBar.update'), [])
@@ -686,7 +703,7 @@ test('a cli that cannot start names npx, Node.js and the PATH of the app', async
   const { createWorker } = await import('./worker')
   const missing = createWorker({ conport: ['/nonexistent/bin/npx', '-y', 'conport'], orca: ['/nonexistent/bin/orca'], git: ['/nonexistent/bin/git'] })
   const worker = await mountWorker({ default: missing.activate, deactivate: missing.deactivate }, { host: mockHost() })
-  const answer = await worker.request('epics.list', { project: 'p', root: '/' })
+  const answer = await worker.request('sdd.list', { project: 'p', root: '/' })
   assert.equal(answer.ok, false)
   if (!answer.ok) {
     assert.equal(answer.error.code, 'spawn_failed')
@@ -700,35 +717,35 @@ test('a cli that cannot start names npx, Node.js and the PATH of the app', async
 test('a missing api key shows the cli refusal', async () => {
   const f = fake([
     {
-      match: 'epic list',
+      match: 'sdd list',
       code: 2,
       stdout: json({ ok: false, error: NO_KEY }),
       stderr: `${NO_KEY.code}: ${NO_KEY.message} — ${NO_KEY.action}\n`
     }
   ])
   const worker = await mountWorker(f.worker, { host: f.host() })
-  const answer = await worker.request('epics.list', { project: 'shop-api', root: f.root })
+  const answer = await worker.request('sdd.list', { project: 'shop-api', root: f.root })
   assert.deepEqual(answer, { ok: false, error: NO_KEY })
-  assert.deepEqual(f.conportCalls(), [['epic', 'list', '--project', 'shop-api', '--json']])
+  assert.deepEqual(f.conportCalls(), [sddListArgs('shop-api')])
   await worker.deactivate()
 })
 
 test('the json refusal on standard output is read before the error stream', async () => {
   const f = fake([
-    { match: 'epic list', code: 2, stdout: json({ ok: false, error: NO_KEY }), stderr: 'npm warn exec something\n' }
+    { match: 'sdd list', code: 2, stdout: json({ ok: false, error: NO_KEY }), stderr: 'npm warn exec something\n' }
   ])
   const worker = await mountWorker(f.worker, { host: f.host() })
-  assert.deepEqual(await worker.request('epics.list', { project: 'p', root: f.root }), { ok: false, error: NO_KEY })
+  assert.deepEqual(await worker.request('sdd.list', { project: 'p', root: f.root }), { ok: false, error: NO_KEY })
   await worker.deactivate()
 })
 
 test('a refusal printed only to the error stream is read from its one line', async () => {
   const f = fake([
-    { match: 'epic list', code: 1, stderr: 'epic_busy: epic 7 is led by yuri — wait until their session ends\n' },
+    { match: 'sdd list', code: 1, stderr: 'epic_busy: epic 7 is led by yuri — wait until their session ends\n' },
     { match: 'epic agents', code: 1, stderr: 'boom\n' }
   ])
   const worker = await mountWorker(f.worker, { host: f.host() })
-  assert.deepEqual(await worker.request('epics.list', { project: 'p', root: f.root }), {
+  assert.deepEqual(await worker.request('sdd.list', { project: 'p', root: f.root }), {
     ok: false,
     error: { code: 'epic_busy', message: 'epic 7 is led by yuri', action: 'wait until their session ends' }
   })
@@ -739,14 +756,14 @@ test('a refusal printed only to the error stream is read from its one line', asy
   await worker.deactivate()
 })
 
-test('agents come from epic agents json with the agent that prepared last, and no roles of the project', async () => {
+test('agents come from epic agents json with the agent of the last launch, and no roles of the project', async () => {
   const f = fake([{ match: 'epic agents', stdout: json(AGENTS) }])
   // The record of the roles of a project, kept by earlier versions, is not read.
-  const host = mockHost({ storage: { [`roles:${HANDLE}`]: ROLES, [`prepare:${HANDLE}`]: 'codex' } })
+  const host = mockHost({ storage: { [`roles:${HANDLE}`]: ROLES, [`launcher:${HANDLE}`]: 'codex' } })
   const worker = await mountWorker(f.worker, { host })
   assert.deepEqual(await worker.request('agents.get', { project: HANDLE, root: f.root }), {
     ok: true,
-    data: { agents: AGENTS.agents, preparer: 'codex' }
+    data: { agents: AGENTS.agents, launcher: 'codex' }
   })
   assert.deepEqual(f.conportCalls(), [['epic', 'agents', '--json']])
   await worker.deactivate()
@@ -772,7 +789,7 @@ test('an agent kind Orca has is found though the worker PATH lacks its command',
         { id: 'codex', label: 'Codex', command: 'codex', found: true },
         { id: 'gemini', label: 'Gemini CLI', command: 'gemini', found: false }
       ],
-      preparer: null
+      launcher: null
     }
   })
   assert.equal(host.callsOf('agents.list').length, 1)
@@ -790,19 +807,49 @@ test('agents Orca cannot list leave the list of the CLI as it is', async () => {
   const worker = await mountWorker(f.worker, { host })
   assert.deepEqual(await worker.request('agents.get', { project: HANDLE, root: f.root }), {
     ok: true,
-    data: { agents: AGENTS.agents, preparer: null }
+    data: { agents: AGENTS.agents, launcher: null }
   })
   await worker.deactivate()
 })
 
-test('epics list reads epic list json', async () => {
-  const f = fake([{ match: 'epic list', stdout: json(EPIC_LIST) }])
+test('the worker answers no request of the tabs it had: epics.list, tasks.list, epic.prepare', async () => {
+  const f = fake([])
   const worker = await mountWorker(f.worker, { host: f.host() })
-  assert.deepEqual(await worker.request('epics.list', { project: 'shop-api', root: f.root }), {
-    ok: true,
-    data: EPIC_LIST
-  })
+  for (const name of ['epics.list', 'tasks.list', 'epic.prepare']) {
+    await assert.rejects(worker.request(name as never, { project: HANDLE, root: f.root, epic: 9, agent: 'claude' } as never), new RegExp(`no panel handler named ${name.replace(".", "\\.")}`))
+  }
+  assert.deepEqual(f.conportCalls(), [])
   await worker.deactivate()
+})
+
+test('project.page names the project in the team that holds it', async () => {
+  const project = { handle: HANDLE, canonical_name: 'k7m2qx9d/shop' }
+  const f = fake([{ match: `api projects get --project ${HANDLE}`, stdout: json(project) }])
+  const worker = await mountWorker(f.worker, { host: f.host() })
+  assert.deepEqual(await worker.request('project.page', { project: HANDLE, root: f.root }), {
+    ok: true,
+    data: { url: `https://me.conport.app/t/k7m2qx9d/p/${HANDLE}` }
+  })
+  assert.deepEqual(f.conportCalls(), [['api', 'projects', 'get', '--project', HANDLE]])
+  await worker.deactivate()
+  // The Private Team is named pers; a name of a project is refused before the CLI is asked.
+  const own = fake([{ match: 'api projects get', stdout: json({ handle: HANDLE, canonical_name: 'pers/shop' }) }])
+  const second = await mountWorker(own.worker, { host: own.host() })
+  assert.deepEqual(await second.request('project.page', { project: HANDLE, root: own.root }), { ok: true, data: { url: `https://me.conport.app/t/pers/p/${HANDLE}` } })
+  const named = await second.request('project.page', { project: 'shop-api', root: own.root })
+  assert.equal(named.ok === false && named.error.code, 'project_not_handle')
+  assert.equal(own.conportCalls().length, 1)
+  await second.deactivate()
+  // An answer without the canonical name is bad output; a refusal of the CLI comes as it is.
+  const odd = fake([{ match: 'api projects get', stdout: json({ handle: HANDLE }) }])
+  const third = await mountWorker(odd.worker, { host: odd.host() })
+  const bad = await third.request('project.page', { project: HANDLE, root: odd.root })
+  assert.equal(bad.ok === false && bad.error.code, 'bad_output')
+  await third.deactivate()
+  const refusing = fake([{ match: 'api projects get', code: 2, stdout: json({ ok: false, error: NO_KEY }) }])
+  const fourth = await mountWorker(refusing.worker, { host: refusing.host() })
+  assert.deepEqual(await fourth.request('project.page', { project: HANDLE, root: refusing.root }), { ok: false, error: NO_KEY })
+  await fourth.deactivate()
 })
 
 /** `orca repo list` of a machine with four projects in Orca's own order, the focused repository second. */
@@ -895,15 +942,15 @@ function argumentsOf(command: string): string[] {
 }
 
 /**
- * Prepares `epic` with `agent` over the fake CLI, whose `conport prompt` answers by `conport`
- * when given and with its own text otherwise; the answer, the terminal command and the one
- * argument the agent gets.
+ * Starts the brainstorm of idea `task` with `agent` over the fake CLI, whose `conport prompt`
+ * answers by `conport` when given and with its own text otherwise; the answer, the terminal
+ * command and the one argument the agent gets.
  */
-async function prepare(epic: number, agent = 'claude', conport: FakeAnswer[] = [], agents = AGENTS, project = 'shop-api') {
+async function brainstorm(task: number, agent = 'claude', conport: FakeAnswer[] = [], agents = AGENTS, project = HANDLE) {
   const f = fake([...conport, { match: 'epic agents', stdout: json(agents) }], [SWITCHED])
   const host = f.host({ 'agents.list': { agents: [] } })
   const worker = await mountWorker(f.worker, { host })
-  const answer = await worker.request('epic.prepare', { project, root: f.root, epic, agent })
+  const answer = await worker.request('idea.start', { project, root: f.root, task, agent })
   const created = host.callsOf('terminal.create') as Array<{ workspaceId: string; title: string; command: string }>
   const command = created[0]?.command ?? ''
   const args = command === '' ? [] : argumentsOf(command)
@@ -914,15 +961,15 @@ async function prepare(epic: number, agent = 'claude', conport: FakeAnswer[] = [
 /** The calls of the fake conport that asked `conport prompt` for a text. */
 const promptCalls = (f: ReturnType<typeof fake>): string[][] => f.conportCalls().filter((call) => call[0] === 'prompt')
 
-test('prepare opens the chosen agent in the project root with the text of conport prompt as one argument', async () => {
-  const { f, answer, created, args, task, worker } = await prepare(10, 'codex')
+test('a brainstorm opens the chosen agent in the project root with the text of conport prompt as one argument', async () => {
+  const { f, answer, created, args, task, worker } = await brainstorm(41, 'codex')
   assert.deepEqual(answer, { ok: true, data: { terminal: 'term-1' } })
   // A terminal of the repository root, the command of the chosen agent and one argument: the task.
-  assert.deepEqual(created.map(({ workspaceId, title }) => ({ workspaceId, title })), [{ workspaceId: 'ws-root', title: 'conport prepare 10' }])
+  assert.deepEqual(created.map(({ workspaceId, title }) => ({ workspaceId, title })), [{ workspaceId: 'ws-root', title: 'conport idea 41' }])
   assert.match(created[0]?.command ?? '', /^codex '/)
   assert.equal(args.length, 1)
-  // The text is the one the CLI printed for the panel of Orca; the epic is not read apart from it.
-  const asked = preparePromptArgs({ epic: 10, project: 'shop-api' })
+  // The text is the one the CLI printed for the panel of Orca; the idea is not read apart from it.
+  const asked = ideaPromptArgs({ task: 41, project: HANDLE, agent: 'codex', root: f.root })
   assert.deepEqual(f.conportCalls(), [asked, ['epic', 'agents', '--json']])
   assert.equal(task, promptText(asked))
   // The person talks with the agent there: the terminal comes to the front.
@@ -930,13 +977,17 @@ test('prepare opens the chosen agent in the project root with the text of conpor
   assert.deepEqual(worker.refusals, [])
 })
 
-test('a task with quotes and dollars survives the shell, and its project reaches the CLI as one word', async () => {
-  // A project as a person might name it: quotes of both kinds, a dollar and a backquote.
-  const project = `it's "$HOME" \`x\``
-  const { f, task, args } = await prepare(10, 'claude', [], AGENTS, project)
+test('a task with quotes and dollars survives the shell, and a project named with quotes is refused before the CLI', async () => {
+  // A brainstorm remembers its terminal under the handle: a name, quotes and all, is refused before anything runs.
+  const byName = await brainstorm(41, 'claude', [], AGENTS, `it's "$HOME" \`x\``)
+  assert.deepEqual(byName.answer, { ok: false, error: NOT_HANDLE })
+  assert.deepEqual([promptCalls(byName.f), byName.created], [[], []])
+  // The text the CLI prints carries quotes of both kinds, a dollar and a backquote: one argument still.
+  const { f, task, args } = await brainstorm(41)
   assert.equal(args.length, 1)
-  assert.deepEqual(promptCalls(f), [preparePromptArgs({ epic: 10, project })])
-  assert.equal(task, promptText(preparePromptArgs({ epic: 10, project })))
+  const asked = ideaPromptArgs({ task: 41, project: HANDLE, agent: 'claude', root: f.root })
+  assert.deepEqual(promptCalls(f), [asked])
+  assert.equal(task, promptText(asked))
   for (const piece of ["'", '"', '$', '\n', '`']) assert.ok(task.includes(piece), JSON.stringify(piece))
 })
 
@@ -944,7 +995,7 @@ test('the api key never reaches the task or the command', async () => {
   const key = 'cport_live_secretvalue'
   process.env.CONPORT_API_KEY = key
   try {
-    const { command } = await prepare(10)
+    const { command } = await brainstorm(41)
     assert.ok(command !== '')
     doesNotMatch(command, /cport_|secretvalue/)
   } finally {
@@ -952,26 +1003,26 @@ test('the api key never reaches the task or the command', async () => {
   }
 })
 
-/** A machine whose CLI answers what a preparation reads. */
-const preparing = () => fake([{ match: 'epic agents', stdout: json(AGENTS) }], [SWITCHED])
+/** A machine whose CLI answers what a brainstorm reads. */
+const brainstorming = () => fake([{ match: 'epic agents', stdout: json(AGENTS) }], [SWITCHED])
 
-test('prepare refuses when the repository root is not a workspace of Orca', async () => {
-  const f = preparing()
+test('a brainstorm refuses when the repository root is not a workspace of Orca', async () => {
+  const f = brainstorming()
   for (const [truncated, code] of [[false, 'root_not_open'], [true, 'workspaces_truncated']] as const) {
     const host = f.host({ 'workspace.list': { workspaces: [], truncated }, 'agents.list': { agents: [] } })
     const worker = await mountWorker(f.worker, { host })
-    const answer = await worker.request('epic.prepare', { project: HANDLE, root: f.root, epic: 10, agent: 'claude' })
+    const answer = await worker.request('idea.start', { project: HANDLE, root: f.root, task: 41, agent: 'claude' })
     // A cut list of workspaces is not a sign that the root is missing from Orca.
     assert.equal(answer.ok === false && answer.error.code, code)
     assert.deepEqual(host.callsOf('terminal.create'), [])
     // No terminal was opened: no agent is remembered for the project.
-    assert.equal(`prepare:${HANDLE}` in (host.data().storage as Record<string, unknown>), false)
+    assert.equal(`launcher:${HANDLE}` in (host.data().storage as Record<string, unknown>), false)
     await worker.deactivate()
   }
 })
 
-test('prepare opens its terminal in the root of the chosen project', async () => {
-  const f = preparing()
+test('a brainstorm opens its terminal in the root of the chosen project', async () => {
+  const f = brainstorming()
   const billing = join(dirname(f.root), 'billing')
   const host = f.host({
     'workspace.list': {
@@ -985,58 +1036,26 @@ test('prepare opens its terminal in the root of the chosen project', async () =>
   })
   const worker = await mountWorker(f.worker, { host })
   mkdirSync(billing, { recursive: true })
-  const answer = await worker.request('epic.prepare', { project: 'billing-api', root: billing, epic: 10, agent: 'claude' })
+  const answer = await worker.request('idea.start', { project: 'prb2ngqx9d', root: billing, task: 41, agent: 'claude' })
   assert.equal(answer.ok, true, JSON.stringify(answer))
   assert.deepEqual(host.callsOf('terminal.create').map((c) => (c as { workspaceId: string }).workspaceId), ['ws-billing'])
   // The CLI runs in the root of that project, for that project.
-  assert.deepEqual(promptCalls(f), [preparePromptArgs({ epic: 10, project: 'billing-api' })])
+  assert.deepEqual(promptCalls(f), [ideaPromptArgs({ task: 41, project: 'prb2ngqx9d', agent: 'claude', root: billing })])
   await worker.deactivate()
 })
 
-test('prepare tells each refusal of conport prompt in the words of the panel', async () => {
-  const cases: Array<[number, string, string, string]> = [
-    [15, 'epic_ready', 'Epic 15 is already ready to run', 'Press Refresh and start it.'],
-    [20, 'epic_not_preparable', 'Epic 20 is not ready to run for a reason preparation cannot fix', 'Press Refresh and look at the epic in the Prepare tab.'],
-    [99, 'epic_not_found', 'Epic 99 is not in the project', 'Press Refresh.']
-  ]
-  for (const [epic, code, message, action] of cases) {
-    const { f, answer, created } = await prepare(epic, 'claude', [promptRefused('prepare', code)])
-    assert.deepEqual(answer, { ok: false, error: { code, message, action } }, code)
-    // The panel shows the worker's words as they are.
-    assert.deepEqual(refusalText({ code, message, action }), { what: message, action })
-    assert.deepEqual(created, [])
-    // Refused before the agent is looked for.
-    assert.deepEqual(f.conportCalls(), [preparePromptArgs({ epic, project: 'shop-api' })])
-  }
-})
-
 test('a refusal of conport prompt the panel words by its code reaches it as the CLI gave it, and a text missing is bad output', async () => {
-  const noKey = await prepare(10, 'claude', [{ match: 'prompt prepare ', code: 2, stdout: json({ ok: false, error: NO_KEY }) }])
+  const noKey = await brainstorm(41, 'claude', [{ match: 'prompt idea ', code: 2, stdout: json({ ok: false, error: NO_KEY }) }])
   assert.deepEqual(noKey.answer, { ok: false, error: NO_KEY })
   assert.deepEqual(noKey.created, [])
   for (const body of [{ ok: true }, { ok: true, text: '' }, { ok: true, text: 7 }]) {
-    const odd = await prepare(10, 'claude', [{ match: 'prompt prepare ', stdout: json(body) }])
+    const odd = await brainstorm(41, 'claude', [{ match: 'prompt idea ', stdout: json(body) }])
     assert.deepEqual(odd.answer, { ok: false, error: { code: 'bad_output', message: "conport answered without the task's text", action: 'Update conport.' } })
     assert.deepEqual(odd.created, [])
   }
 })
 
-test('the agent that prepared an epic is remembered for the project', async () => {
-  const f = preparing()
-  const host = f.host({ 'agents.list': { agents: [] } })
-  const worker = await mountWorker(f.worker, { host })
-  const before = await worker.request('agents.get', { project: HANDLE, root: f.root })
-  assert.equal(before.ok && before.data.preparer, null)
-  await worker.request('epic.prepare', { project: HANDLE, root: f.root, epic: 9, agent: 'codex' })
-  const after = await worker.request('agents.get', { project: HANDLE, root: f.root })
-  assert.equal(after.ok && after.data.preparer, 'codex')
-  // Another project keeps its own choice.
-  const other = await worker.request('agents.get', { project: 'prother000', root: f.root })
-  assert.equal(other.ok && other.data.preparer, null)
-  await worker.deactivate()
-})
-
-test('prepare refuses an agent that takes no positional request, found or not, and one that can but is not found', async () => {
+test('a brainstorm refuses an agent that takes no positional request, found or not, and one that can but is not found', async () => {
   // OpenCode reads a positional argument as a project folder: found, it is refused all the same.
   const agents = {
     agents: [
@@ -1046,35 +1065,27 @@ test('prepare refuses an agent that takes no positional request, found or not, a
     ]
   }
   for (const agent of ['opencode', 'gemini', 'aider']) {
-    const refused = await prepare(10, agent, [], agents)
+    const refused = await brainstorm(41, agent, [], agents)
     assert.deepEqual(refused.answer, {
       ok: false,
       error: { code: 'agent_cannot_prepare', message: `The agent “${agent}” does not take a task at start`, action: 'Choose Claude Code, Codex or Cursor.' }
     })
     assert.deepEqual(refused.created, [])
   }
-  const cursor = await prepare(10, 'cursor', [], agents)
+  const cursor = await brainstorm(41, 'cursor', [], agents)
   assert.equal(cursor.answer.ok === false && cursor.answer.error.code, 'agent_not_found')
   // Cursor starts by its own command when found.
   const found = { agents: agents.agents.map((a) => (a.id === 'cursor' ? { ...a, found: true } : a)) }
-  const started = await prepare(10, 'cursor', [], found)
+  const started = await brainstorm(41, 'cursor', [], found)
   assert.equal(started.answer.ok, true)
   assert.match(started.command, /^cursor-agent '/)
-})
-
-test('tasks list reads task list json', async () => {
-  const f = fake([{ match: 'task list', stdout: json(TASK_LIST) }])
-  const worker = await mountWorker(f.worker, { host: f.host() })
-  assert.deepEqual(await worker.request('tasks.list', { project: 'shop-api', root: f.root }), { ok: true, data: TASK_LIST.tasks })
-  assert.deepEqual(f.conportCalls(), [['task', 'list', '--project', 'shop-api', '--json']])
-  await worker.deactivate()
 })
 
 /**
  * Hands `task` to `agent` over the fake CLI, to do it, to review it or to fix it; `conport prompt`
  * answers by `conport` when given. The answer, the terminal and the one argument the agent gets.
  */
-async function hand(task: number, mode: HandMode, agent = 'claude', conport: FakeAnswer[] = [], project = 'shop-api') {
+async function hand(task: number, mode: HandMode, agent = 'claude', conport: FakeAnswer[] = [], project = HANDLE) {
   const f = fake([...conport, { match: 'epic agents', stdout: json(AGENTS) }], [SWITCHED])
   const host = f.host({ 'agents.list': { agents: [] } })
   const worker = await mountWorker(f.worker, { host })
@@ -1082,9 +1093,10 @@ async function hand(task: number, mode: HandMode, agent = 'claude', conport: Fak
   const created = host.callsOf('terminal.create') as Array<{ workspaceId: string; title: string; command: string }>
   const command = created[0]?.command ?? ''
   const args = command === '' ? [] : argumentsOf(command)
-  const preparer = await worker.request('agents.get', { project, root: f.root })
+  const launcher = await worker.request('agents.get', { project, root: f.root })
+  const storage = host.data().storage as Record<string, unknown>
   await worker.deactivate()
-  return { f, answer, created, command, args, task: args[0] ?? '', remembered: preparer.ok ? preparer.data.preparer : null }
+  return { f, answer, created, command, args, task: args[0] ?? '', remembered: launcher.ok ? launcher.data.launcher : null, storage }
 }
 
 test('hand a task opens the chosen agent with the text of conport prompt as one argument, in each mode', async () => {
@@ -1097,7 +1109,7 @@ test('hand a task opens the chosen agent with the text of conport prompt as one 
     assert.match(created[0]?.command ?? '', /^codex '/)
     assert.equal(args.length, 1)
     // The text is the one the CLI printed for the panel of Orca; the task is not read apart from it.
-    const asked = taskPromptArgs({ task: id, project: 'shop-api', mode, agent: 'codex', root: f.root })
+    const asked = taskPromptArgs({ task: id, project: HANDLE, mode, agent: 'codex', root: f.root })
     assert.deepEqual(f.conportCalls(), [asked, ['epic', 'agents', '--json'], ['epic', 'agents', '--json']])
     assert.equal(task, promptText(asked))
     assert.deepEqual(f.orcaCalls(), [['terminal', 'switch', '--terminal', 'term-1', '--json']])
@@ -1108,7 +1120,7 @@ test('hand a task opens the chosen agent with the text of conport prompt as one 
 
 test('hand tells each refusal of conport prompt in the words of the panel', async () => {
   const cases: Array<[number, HandMode, string, string]> = [
-    [99, 'do', 'task_not_found', 'Task 99 is not among the open tasks outside the epics'],
+    [99, 'do', 'task_not_found', 'Task 99 is not among the open tasks of the panel'],
     // Done by someone else meanwhile: each mode says what the task no longer waits for.
     [42, 'do', 'task_moved', 'Task 42 is already in progress'],
     [41, 'review', 'task_moved', 'Task 41 is not waiting for review'],
@@ -1121,19 +1133,19 @@ test('hand tells each refusal of conport prompt in the words of the panel', asyn
     assert.deepEqual(refusalText(error), { what: message, action: error.action })
     assert.deepEqual(created, [])
     assert.equal(remembered, null)
-    assert.deepEqual(promptCalls(f), [taskPromptArgs({ task: id, project: 'shop-api', mode, agent: 'claude', root: f.root })])
+    assert.deepEqual(promptCalls(f), [taskPromptArgs({ task: id, project: HANDLE, mode, agent: 'claude', root: f.root })])
   }
 })
 
 test('a refusal of conport prompt whose code is not about the thing asked for reaches the panel as the CLI sent it', async () => {
-  // A code of an epic on a task, and of a task on an epic: there is no number to word it by.
+  // A code of an epic on a task, and a code of a task an idea is not refused with: nothing to word it by.
   const english = (code: string) => ({ code, message: `${code.replace(/_/g, ' ')}, as the CLI words it`, action: 'do what the CLI says' })
   const onTask = await hand(41, 'do', 'claude', [promptRefused('task', 'epic_not_found')])
   assert.deepEqual(onTask.answer, { ok: false, error: english('epic_not_found') })
   assert.deepEqual(onTask.created, [])
-  const onEpic = await prepare(10, 'claude', [promptRefused('prepare', 'task_moved')])
-  assert.deepEqual(onEpic.answer, { ok: false, error: english('task_moved') })
-  assert.deepEqual(onEpic.created, [])
+  const onIdea = await brainstorm(41, 'claude', [promptRefused('idea', 'task_moved')])
+  assert.deepEqual(onIdea.answer, { ok: false, error: english('task_moved') })
+  assert.deepEqual(onIdea.created, [])
 })
 
 test('hand refuses an agent that cannot take a task before the CLI is asked, and one that is not found', async () => {
@@ -1148,19 +1160,22 @@ test('hand refuses an agent that cannot take a task before the CLI is asked, and
   const cursor = { agents: [...AGENTS.agents, { id: 'cursor', label: 'Cursor', command: 'cursor-agent', found: false }] }
   const f = fake([{ match: 'epic agents', stdout: json(cursor) }])
   const worker = await mountWorker(f.worker, { host: f.host({ 'agents.list': { agents: [] } }) })
-  const answer = await worker.request('task.hand', { project: 'shop-api', root: f.root, task: 41, agent: 'cursor', mode: 'do' })
+  const answer = await worker.request('task.hand', { project: HANDLE, root: f.root, task: 41, agent: 'cursor', mode: 'do' })
   assert.equal(answer.ok === false && answer.error.code, 'agent_not_found')
   await worker.deactivate()
 })
 
-test('a task with quotes in its project survives the shell, and the api key never reaches it', async () => {
-  const project = `it's "$HOME" \`x\``
+test('a task named by a project with quotes is refused before the CLI, and the api key never reaches a handed task', async () => {
+  // A hand remembers its terminal under the handle: a name, quotes and all, is refused before anything runs.
+  const byName = await hand(41, 'do', 'claude', [], `it's "$HOME" \`x\``)
+  assert.deepEqual(byName.answer, { ok: false, error: NOT_HANDLE })
+  assert.deepEqual([byName.f.conportCalls().filter((call) => call[0] !== 'epic'), byName.created], [[], []])
   const key = 'cport_live_secretvalue'
   process.env.CONPORT_API_KEY = key
   try {
-    const { f, task, args, command } = await hand(41, 'do', 'claude', [], project)
+    const { f, task, args, command } = await hand(41, 'do', 'claude')
     assert.equal(args.length, 1)
-    const asked = taskPromptArgs({ task: 41, project, mode: 'do', agent: 'claude', root: f.root })
+    const asked = taskPromptArgs({ task: 41, project: HANDLE, mode: 'do', agent: 'claude', root: f.root })
     assert.deepEqual(promptCalls(f), [asked])
     assert.equal(task, promptText(asked))
     doesNotMatch(command, /cport_|secretvalue/)
@@ -1413,9 +1428,10 @@ test('epic.start remembers the harness and the roles for the epic, the harness f
   })
 })
 
-test('epic.start writes neither prepare nor the old roles record', async () => {
+test('epic.start writes neither the launcher nor the old roles record', async () => {
   const { storage, answer } = await start()
   assert.equal(answer.ok, true)
+  assert.equal(`launcher:${HANDLE}` in storage, false)
   assert.equal(`prepare:${HANDLE}` in storage, false)
   assert.equal(`roles:${HANDLE}` in storage, false)
   // Nothing is kept for the project but its harness.
@@ -1494,7 +1510,7 @@ test('epic.start refuses an epic without a spec or a plan', async () => {
   for (const epic of [9, 10]) {
     // Whatever else is wrong with the request, the epic is named first.
     const started = await start({ epic, harness: 'gemini' })
-    assertRefused(started, 'epic_not_ready', `Epic ${epic} has no spec or no plan`, 'Prepare the epic in the Prepare tab.')
+    assertRefused(started, 'epic_not_ready', `Epic ${epic} has no spec or no plan`, 'Plan it from the Specs section.')
     assert.deepEqual(started.f.conportCalls(), [EPIC_LIST_CALL])
   }
 })
@@ -1641,7 +1657,7 @@ test('a refusal of orca is returned as is', async () => {
 test('epic.start tells each refusal of conport prompt in the words of the panel, the copy left for the next start', async () => {
   const cases: Array<[string, string, string]> = [
     ['epic_not_found', 'Epic 7 is not in the project', 'Press Refresh.'],
-    ['epic_not_ready', 'Epic 7 has no spec or no plan', 'Prepare the epic in the Prepare tab.'],
+    ['epic_not_ready', 'Epic 7 has no spec or no plan', 'Plan it from the Specs section.'],
     ['role_invalid', 'The subagent type is not a plain name', 'Choose a type for the role from the list.'],
     ['agent_cannot_prepare', 'The harness “claude” does not take a task at start', 'Choose Claude Code, Codex or Cursor.']
   ]
@@ -1719,30 +1735,30 @@ test('an epic terminal orca cannot bring forward is only logged, and the start i
   assert.equal(worker.logs.some((line) => line.includes('terminal_not_found')), true, JSON.stringify(worker.logs))
 })
 
-test('prepare and hand still remember the agent of the project', async () => {
+test('a brainstorm and a hand still remember the agent of the project', async () => {
   const machine = await startMachine({ orca: [SWITCHED] })
   const { f, host, worker } = machine
-  const preparer = async (): Promise<unknown> => {
+  const launcher = async (): Promise<unknown> => {
     const answer = await worker.request('agents.get', { project: HANDLE, root: f.root })
-    return answer.ok ? answer.data.preparer : answer.error
+    return answer.ok ? answer.data.launcher : answer.error
   }
-  const prepared = await worker.request('epic.prepare', { project: HANDLE, root: f.root, epic: 9, agent: 'codex' })
-  assert.deepEqual(prepared, { ok: true, data: { terminal: 'term-1' } })
-  assert.equal(await preparer(), 'codex')
+  const opened = await worker.request('idea.start', { project: HANDLE, root: f.root, task: 41, agent: 'codex' })
+  assert.deepEqual(opened, { ok: true, data: { terminal: 'term-1' } })
+  assert.equal(await launcher(), 'codex')
   // It opens its terminal as before: through the host, in the root.
   assert.deepEqual(
     (host.callsOf('terminal.create') as Array<{ workspaceId: string; title: string }>).map(({ workspaceId, title }) => ({ workspaceId, title })),
-    [{ workspaceId: 'ws-root', title: 'conport prepare 9' }]
+    [{ workspaceId: 'ws-root', title: 'conport idea 41' }]
   )
   // The start of an epic with another harness leaves the agent of the project as it was.
   const started = await startOn(machine, { harness: 'claude' })
   assert.equal(started.answer.ok, true)
-  assert.equal(await preparer(), 'codex')
+  assert.equal(await launcher(), 'codex')
   assert.equal(started.storage[`harness:${HANDLE}`], 'claude')
-  // A refused preparation remembers nothing.
-  const refused = await worker.request('epic.prepare', { project: 'prother000', root: f.root, epic: 9, agent: 'gemini' })
+  // A refused brainstorm remembers nothing.
+  const refused = await worker.request('idea.start', { project: 'prpther2kd', root: f.root, task: 41, agent: 'gemini' })
   assert.equal(refused.ok === false && refused.error.code, 'agent_cannot_prepare')
-  assert.equal('prepare:prother000' in (host.data().storage as Record<string, unknown>), false)
+  assert.equal('launcher:prpther2kd' in (host.data().storage as Record<string, unknown>), false)
   await worker.deactivate()
 
   // A task handed remembers its agent, one whose agent is refused does not.
@@ -1844,8 +1860,11 @@ async function sessionRequest(options: SessionCase) {
   )
   const host = f.host({}, options.storage)
   const worker = await mountWorker(f.worker, { host })
-  const ref = { project: (options.project === undefined ? HANDLE : options.project) as string, root: f.root, epic: 7 }
-  const answer: unknown = await worker.request(options.request ?? 'epic.session', ref)
+  const project = (options.project === undefined ? HANDLE : options.project) as string
+  const answer: unknown =
+    options.request === 'terminal.show'
+      ? await worker.request('terminal.show', { project, root: f.root, row: { kind: 'epic', id: 7, spec: null, idea: null } })
+      : await worker.request('epic.session', { project, root: f.root, epic: 7 })
   await worker.deactivate()
   const copy = copyIn(dirname(f.root))
   return {
@@ -2033,7 +2052,8 @@ test('epic.session answers the stored harness and roles, and the defaults for a 
     'harness:prother000:7': 'cursor',
     'harness:prother000': 'cursor',
     [`roles:${HANDLE}`]: ROLES,
-    [`prepare:${HANDLE}`]: 'cursor'
+    [`prepare:${HANDLE}`]: 'cursor',
+    [`launcher:${HANDLE}`]: 'cursor'
   }
   assert.deepEqual(await chosen(elsewhere), { harness: 'claude', roles: DEFAULT_ROLES })
   // The records of the epic itself win over the harness of the project.
@@ -2325,4 +2345,513 @@ test('terminal.show refuses a project that is not named by its handle, and retur
     })
     assert.deepEqual(refused.answer, { ok: false, error: { ...refusal, action: '' } }, match)
   }
+})
+
+// --- the SDD stages and their launches ---
+
+/** A document as the CLI names it, `doc-<N>`, made from its number. */
+const doc = (n: number): string => `doc-${n}`
+
+test('sdd.list answers the JSON of conport sdd list', async () => {
+  const f = fake([{ match: 'sdd list', stdout: json(SDD_LIST) }])
+  const worker = await mountWorker(f.worker, { host: f.host() })
+  assert.deepEqual(await worker.request('sdd.list', { project: HANDLE, root: f.root }), { ok: true, data: SDD_LIST })
+  // One read of the stages: epics and tasks are not listed apart from it.
+  assert.deepEqual(f.conportCalls(), [sddListArgs(HANDLE)])
+  await worker.deactivate()
+  // A refusal of the CLI reaches the panel as it gave it.
+  const refusing = fake([{ match: 'sdd list', code: 2, stdout: json({ ok: false, error: NO_KEY }) }])
+  const refused = await mountWorker(refusing.worker, { host: refusing.host() })
+  assert.deepEqual(await refused.request('sdd.list', { project: HANDLE, root: refusing.root }), { ok: false, error: NO_KEY })
+  await refused.deactivate()
+})
+
+test('sdd.taken runs sdd list --taken', async () => {
+  const f = fake([
+    { match: 'sdd list --taken', stdout: json(TAKEN) },
+    { match: 'sdd list', stdout: json(SDD_LIST) }
+  ])
+  const worker = await mountWorker(f.worker, { host: f.host() })
+  assert.deepEqual(await worker.request('sdd.taken', { project: HANDLE, root: f.root }), { ok: true, data: TAKEN })
+  // The light read alone: the full list is not read behind it.
+  assert.deepEqual(f.conportCalls(), [sddTakenArgs(HANDLE)])
+  await worker.deactivate()
+})
+
+/** A machine for the launches of the rows: the CLI answers by `conport`, the main working copy is on `base`. */
+async function launchMachine(conport: FakeAnswer[] = [], options: { base?: string | null; storage?: Record<string, unknown> } = {}) {
+  const base = options.base === undefined ? 'main' : options.base
+  const f = fake([...conport, { match: 'epic agents', stdout: json(AGENTS) }], ({ root }) => [
+    SWITCHED,
+    worktreeList(root, [worktreeRow(root, base, true)])
+  ])
+  const host = f.host({ 'agents.list': { agents: [] } }, options.storage)
+  const worker = await mountWorker(f.worker, { host })
+  return {
+    f,
+    host,
+    worker,
+    storage: (): Record<string, unknown> => host.data().storage as Record<string, unknown>,
+    created: () => host.callsOf('terminal.create') as Array<{ workspaceId: string; title: string; command: string }>
+  }
+}
+
+type LaunchMachine = Awaited<ReturnType<typeof launchMachine>>
+
+/** The terminals a launch opened: their workspace, their title, the program and the arguments the agent got. */
+const openedBy = (m: LaunchMachine) =>
+  m.created().map(({ workspaceId, title, command }) => ({ workspaceId, title, program: command.split(' ')[0], args: argumentsOf(command) }))
+
+test('idea.start opens the agent in the root with the idea task and remembers its terminal and the launcher', async () => {
+  const m = await launchMachine()
+  const answer = await m.worker.request('idea.start', { project: HANDLE, root: m.f.root, task: 41, agent: 'codex' })
+  assert.deepEqual(answer, { ok: true, data: { terminal: 'term-1' } })
+  const asked = ideaPromptArgs({ task: 41, project: HANDLE, agent: 'codex', root: m.f.root })
+  // The text is the one the CLI printed for the panel of Orca, given to the agent as one argument.
+  assert.deepEqual(m.f.conportCalls(), [asked, ['epic', 'agents', '--json']])
+  assert.deepEqual(openedBy(m), [{ workspaceId: 'ws-root', title: 'conport idea 41', program: 'codex', args: [promptText(asked)] }])
+  // The person talks with the agent there: the terminal comes to the front.
+  assert.deepEqual(m.f.orcaCalls(), [['terminal', 'switch', '--terminal', 'term-1', '--json']])
+  assert.deepEqual(m.storage(), { [`launcher:${HANDLE}`]: 'codex', [`session:${HANDLE}:task-41`]: { terminal: 'term-1' } })
+  assert.deepEqual(m.worker.refusals, [])
+
+  // An agent that takes no task is refused before the CLI is asked; nothing more is opened or kept.
+  const refused = await m.worker.request('idea.start', { project: HANDLE, root: m.f.root, task: 43, agent: 'gemini' })
+  assert.deepEqual(refused, {
+    ok: false,
+    error: { code: 'agent_cannot_prepare', message: 'The agent “gemini” does not take a task at start', action: 'Choose Claude Code, Codex or Cursor.' }
+  })
+  assert.equal(m.f.conportCalls().length, 2)
+  assert.equal(m.created().length, 1)
+  assert.equal(`session:${HANDLE}:task-43` in m.storage(), false)
+  await m.worker.deactivate()
+})
+
+test('proposal.start accepts the proposal first, then starts the idea it answers', async () => {
+  const m = await launchMachine([{ match: 'proposal accept ', stdout: json({ task: 60 }) }])
+  const answer = await m.worker.request('proposal.start', { project: HANDLE, root: m.f.root, doc: 301, agent: 'claude' })
+  assert.deepEqual(answer, { ok: true, data: { terminal: 'term-1', task: 60 } })
+  const idea = ideaPromptArgs({ task: 60, project: HANDLE, agent: 'claude', root: m.f.root })
+  // The agent is looked up once, before the accept; then the idea the accept answers is the one
+  // the agent is started with.
+  assert.deepEqual(m.f.conportCalls(), [['epic', 'agents', '--json'], proposalAcceptArgs({ doc: 301, project: HANDLE }), idea])
+  assert.deepEqual(openedBy(m), [{ workspaceId: 'ws-root', title: 'conport idea 60', program: 'claude', args: [promptText(idea)] }])
+  // The row of the new idea finds this terminal.
+  assert.deepEqual(m.storage(), { [`launcher:${HANDLE}`]: 'claude', [`session:${HANDLE}:task-60`]: { terminal: 'term-1' } })
+  await m.worker.deactivate()
+})
+
+/** What the fake conport answers when a command starting with `match` refuses with `code`, in the CLI's English. */
+function refusedAs(match: string, code: string): FakeAnswer {
+  const message = `${code.replace(/_/g, ' ')}, as the CLI words it`
+  return { match, code: 2, stdout: json({ ok: false, error: { code, message, action: 'do what the CLI says' } }) }
+}
+
+const PROPOSAL_CLOSED = { code: 'proposal_closed', message: `Proposal ${doc(301)} is no longer open: it was accepted or declined`, action: 'Press Refresh.' }
+const NOT_A_PROPOSAL = { code: 'not_a_proposal', message: `Document ${doc(301)} is not a proposal`, action: 'Press Refresh.' }
+/** A decline of a proposal whose idea an accept left and someone took up. */
+const PROPOSAL_ACCEPTED = { code: 'proposal_accepted', message: `Proposal ${doc(301)} already has its idea, and the idea is taken up`, action: 'Press Refresh.' }
+
+test('a refused accept opens nothing', async () => {
+  for (const error of [PROPOSAL_CLOSED, NOT_A_PROPOSAL]) {
+    const m = await launchMachine([refusedAs('proposal accept ', error.code)])
+    const answer = await m.worker.request('proposal.start', { project: HANDLE, root: m.f.root, doc: 301, agent: 'claude' })
+    // Said in the panel's words, and shown as they are.
+    assert.deepEqual(answer, { ok: false, error }, error.code)
+    assert.deepEqual(refusalText(error), { what: error.message, action: error.action })
+    // No idea is asked for, no terminal opened, nothing remembered.
+    assert.deepEqual(m.f.conportCalls(), [['epic', 'agents', '--json'], proposalAcceptArgs({ doc: 301, project: HANDLE })])
+    assert.deepEqual(m.created(), [])
+    assert.deepEqual(m.storage(), {})
+    await m.worker.deactivate()
+  }
+  // An accept that names no task is bad output: nothing is started on a guess.
+  for (const body of [{}, { task: '60' }, { task: null }]) {
+    const m = await launchMachine([{ match: 'proposal accept ', stdout: json(body) }])
+    const answer = await m.worker.request('proposal.start', { project: HANDLE, root: m.f.root, doc: 301, agent: 'claude' })
+    assert.deepEqual(answer, { ok: false, error: { code: 'bad_output', message: 'conport accepted the proposal without naming its task', action: 'Update conport.' } })
+    assert.deepEqual(m.created(), [])
+    assert.deepEqual(m.storage(), {})
+    await m.worker.deactivate()
+  }
+  // An agent that takes no task is refused before the proposal is accepted: it stays where it was.
+  const m = await launchMachine([{ match: 'proposal accept ', stdout: json({ task: 60 }) }])
+  const answer = await m.worker.request('proposal.start', { project: HANDLE, root: m.f.root, doc: 301, agent: 'gemini' })
+  assert.equal(answer.ok === false && answer.error.code, 'agent_cannot_prepare')
+  assert.deepEqual(m.f.conportCalls(), [])
+  // So is one that takes a task but is not on this machine: nothing is accepted for an agent that cannot start.
+  const missing = await m.worker.request('proposal.start', { project: HANDLE, root: m.f.root, doc: 301, agent: 'cursor' })
+  assert.deepEqual(missing, {
+    ok: false,
+    error: { code: 'agent_not_found', message: 'Agent “cursor” not found', action: 'Start the agent in this Orca workspace and press Refresh.' }
+  })
+  assert.deepEqual(m.f.conportCalls(), [['epic', 'agents', '--json']])
+  assert.deepEqual(m.created(), [])
+  assert.deepEqual(m.storage(), {})
+  await m.worker.deactivate()
+})
+
+test('a launch by the name of the project is refused before anything runs: its terminal is kept under the handle', async () => {
+  const m = await launchMachine([{ match: 'proposal accept ', stdout: json({ task: 60 }) }])
+  const project = 'shop-api'
+  const answers = [
+    await m.worker.request('idea.start', { project, root: m.f.root, task: 41, agent: 'claude' }),
+    await m.worker.request('proposal.start', { project, root: m.f.root, doc: 301, agent: 'claude' }),
+    await m.worker.request('spec.start', { project, root: m.f.root, target: { doc: 30 }, agent: 'claude' }),
+    await m.worker.request('task.hand', { project, root: m.f.root, task: 51, agent: 'claude', mode: 'do' })
+  ]
+  for (const answer of answers) assert.deepEqual(answer, { ok: false, error: NOT_HANDLE })
+  // Nothing is read, accepted, opened or remembered.
+  assert.deepEqual([m.f.conportCalls(), m.f.orcaCalls(), m.created(), m.storage()], [[], [], [], {}])
+  await m.worker.deactivate()
+})
+
+test('spec.start of a document and of an epic passes the branch of the main copy as --base and remembers the terminal under doc-<N> or plan-<epic>', async () => {
+  const cases: Array<[{ doc: number } | { epic: number }, string, string]> = [
+    [{ doc: 30 }, `conport spec ${doc(30)}`, `session:${HANDLE}:${doc(30)}`],
+    // Not under the bare number: that key is the session of the epic in its working copy.
+    [{ epic: 9 }, 'conport spec 9', `session:${HANDLE}:plan-9`]
+  ]
+  for (const [target, title, key] of cases) {
+    // The main working copy is on a branch other than main: that branch is the base.
+    const m = await launchMachine([], { base: 'develop' })
+    const answer = await m.worker.request('spec.start', { project: HANDLE, root: m.f.root, target, agent: 'codex' })
+    assert.deepEqual(answer, { ok: true, data: { terminal: 'term-1' } }, title)
+    const asked = specPromptArgs({ target, project: HANDLE, agent: 'codex', root: m.f.root, base: 'develop' })
+    assert.deepEqual(m.f.conportCalls(), [asked, ['epic', 'agents', '--json']])
+    assert.equal(asked[asked.indexOf('--base') + 1], 'develop')
+    assert.deepEqual(openedBy(m), [{ workspaceId: 'ws-root', title, program: 'codex', args: [promptText(asked)] }])
+    assert.deepEqual(m.storage(), { [`launcher:${HANDLE}`]: 'codex', [key]: { terminal: 'term-1' } })
+    // The main copy is read through orca and the terminal brought forward; git is not asked.
+    assert.deepEqual(m.f.orcaCalls().map((call) => call.slice(0, 2).join(' ')), ['worktree list', 'terminal switch'])
+    assert.deepEqual(m.f.gitCalls(), [])
+    await m.worker.deactivate()
+  }
+  // A main working copy on no branch gives the epic no base: refused before the CLI is asked.
+  const m = await launchMachine([], { base: null })
+  const answer = await m.worker.request('spec.start', { project: HANDLE, root: m.f.root, target: { doc: 30 }, agent: 'claude' })
+  assert.equal(answer.ok === false && answer.error.code, 'root_detached')
+  assert.deepEqual(m.f.conportCalls(), [])
+  assert.deepEqual(m.created(), [])
+  assert.deepEqual(m.storage(), {})
+  await m.worker.deactivate()
+  // An agent that takes no task is refused before anything is read.
+  const gemini = await launchMachine()
+  const refused = await gemini.worker.request('spec.start', { project: HANDLE, root: gemini.f.root, target: { doc: 30 }, agent: 'gemini' })
+  assert.equal(refused.ok === false && refused.error.code, 'agent_cannot_prepare')
+  assert.deepEqual([gemini.f.conportCalls(), gemini.f.orcaCalls()], [[], []])
+  await gemini.worker.deactivate()
+})
+
+test('proposal.decline passes the reason; an empty reason is reason_missing, the CLI not run', async () => {
+  const m = await launchMachine([{ match: 'proposal decline ', stdout: json({ doc: 301, state: 'declined' }) }])
+  const declined = await m.worker.request('proposal.decline', { project: HANDLE, root: m.f.root, doc: 301, reason: '  Out of scope this year \n' })
+  assert.deepEqual(declined, { ok: true, data: null })
+  assert.deepEqual(m.f.conportCalls(), [proposalDeclineArgs({ doc: 301, project: HANDLE, reason: 'Out of scope this year' })])
+  // No agent is started for a decline, and nothing is remembered.
+  assert.deepEqual(m.created(), [])
+  assert.deepEqual(m.storage(), {})
+  const error = { code: 'reason_missing', message: 'No reason is given', action: 'Write why the proposal is declined.' }
+  for (const reason of ['', '   ', '\n', undefined, 7]) {
+    const answer = await m.worker.request('proposal.decline', { project: HANDLE, root: m.f.root, doc: 301, reason: reason as string })
+    assert.deepEqual(answer, { ok: false, error }, JSON.stringify(reason))
+  }
+  assert.equal(m.f.conportCalls().length, 1)
+  assert.deepEqual(refusalText(error), { what: error.message, action: error.action })
+  await m.worker.deactivate()
+  // A refusal of the CLI is said in the panel's words.
+  for (const refusal of [PROPOSAL_CLOSED, NOT_A_PROPOSAL, PROPOSAL_ACCEPTED]) {
+    const closed = await launchMachine([refusedAs('proposal decline ', refusal.code)])
+    const answer = await closed.worker.request('proposal.decline', { project: HANDLE, root: closed.f.root, doc: 301, reason: 'No' })
+    assert.deepEqual(answer, { ok: false, error: refusal })
+    await closed.worker.deactivate()
+  }
+})
+
+interface RowCase {
+  storage?: Record<string, unknown>
+  /** The terminals orca lists in the root; left out, the root is not answered. */
+  root?: unknown[]
+  /** The terminals of a working copy on `epic-<epic>`; left out, there is no such copy. `refused`: orca refuses to list them. */
+  copy?: { epic: number; terminals: unknown[]; refused?: true }
+  project?: string
+  request?: 'row.session' | 'terminal.show'
+}
+
+/** Asks for the terminal of `row`; the answer and what orca was asked for. */
+async function rowRequest(row: RowRef, options: RowCase = {}) {
+  const copyPath = (dir: string, epic: number): string => join(dir, 'elsewhere', `epic-${epic}`)
+  const copy = options.copy
+  const f = fake([], ({ dir, root }) => [
+    worktreeList(root, [worktreeRow(root, 'main', true), ...(copy ? [worktreeRow(copyPath(dir, copy.epic), `epic-${copy.epic}`)] : [])]),
+    ...(copy
+      ? [
+          copy.refused
+            ? { match: `terminal list --worktree path:${copyPath(dir, copy.epic)} `, code: 1, stdout: json(UNAVAILABLE) }
+            : terminalList(copyPath(dir, copy.epic), copy.terminals)
+        ]
+      : []),
+    ...(options.root ? [terminalList(root, options.root)] : []),
+    { match: 'terminal switch --terminal ', stdout: json({ ok: true, result: {} }) }
+  ])
+  const host = f.host({}, options.storage)
+  const worker = await mountWorker(f.worker, { host })
+  const target = { project: options.project ?? HANDLE, root: f.root, row }
+  const answer: unknown =
+    options.request === 'terminal.show' ? await worker.request('terminal.show', target) : await worker.request('row.session', target)
+  await worker.deactivate()
+  return {
+    answer,
+    orca: f.orcaCalls().map((call) => call.slice(0, 2).join(' ')),
+    switched: f.orcaCalls().filter((call) => call[0] === 'terminal' && call[1] === 'switch').map((call) => call[3]),
+    conport: f.conportCalls(),
+    storage: host.data().storage as Record<string, unknown>
+  }
+}
+
+const IDEA_41: RowRef = { kind: 'idea', id: 41 }
+
+test('row.session of an idea finds its remembered terminal while an agent runs in it', async () => {
+  const storage = { [`session:${HANDLE}:task-41`]: { terminal: 'term-idea' } }
+  const live = await rowRequest(IDEA_41, { storage, root: [shell('term-a'), agent('term-idea')] })
+  assert.deepEqual(live.answer, { ok: true, data: { terminal: 'term-idea' } })
+  // Only the root is looked at, and ConPort is not asked.
+  assert.deepEqual(live.orca, ['terminal list'])
+  assert.deepEqual(live.conport, [])
+  // The agent left the terminal: no session, and another agent in the root is not taken for it.
+  const left = await rowRequest(IDEA_41, { storage, root: [shell('term-idea'), agent('term-other')] })
+  assert.deepEqual(left.answer, { ok: true, data: { terminal: null } })
+  // A terminal orca no longer lists is no session either.
+  const gone = await rowRequest(IDEA_41, { storage, root: [agent('term-other')] })
+  assert.deepEqual(gone.answer, { ok: true, data: { terminal: null } })
+  // Nothing remembered: nothing to look for, orca is not asked.
+  const none = await rowRequest(IDEA_41, { root: [agent('term-idea')] })
+  assert.deepEqual(none.answer, { ok: true, data: { terminal: null } })
+  assert.deepEqual(none.orca, [])
+  // A task outside SDD and a spec read their own keys.
+  const task = await rowRequest({ kind: 'task', id: 41 }, { storage, root: [agent('term-idea')] })
+  assert.deepEqual(task.answer, { ok: true, data: { terminal: 'term-idea' } })
+  const ofSpec = { [`session:${HANDLE}:${doc(30)}`]: { terminal: 'term-spec' }, ...storage }
+  const spec = await rowRequest({ kind: 'spec', doc: 30, idea: null }, { storage: ofSpec, root: [agent('term-idea'), agent('term-spec')] })
+  assert.deepEqual(spec.answer, { ok: true, data: { terminal: 'term-spec' } })
+  const otherDoc = await rowRequest({ kind: 'spec', doc: 31, idea: null }, { storage, root: [agent('term-idea')] })
+  assert.deepEqual(otherDoc.answer, { ok: true, data: { terminal: null } })
+  // The records are kept under the handle: a name is refused before orca is asked.
+  const byName = await rowRequest(IDEA_41, { storage, root: [agent('term-idea')], project: 'shop-api' })
+  assert.deepEqual(byName.answer, { ok: false, error: NOT_HANDLE })
+  assert.deepEqual(byName.orca, [])
+})
+
+test('an epic made from an idea inherits the terminal of its spec or its idea', async () => {
+  const epic: RowRef = { kind: 'epic', id: 15, spec: 20, idea: 5 }
+  const ofIdea = { [`session:${HANDLE}:task-5`]: { terminal: 'term-idea' } }
+  const ofSpec = { [`session:${HANDLE}:${doc(20)}`]: { terminal: 'term-spec' } }
+  // The idea's session went on through the spec and the plan into the epic.
+  const fromIdea = await rowRequest(epic, { storage: ofIdea, root: [shell('term-a'), agent('term-idea')] })
+  assert.deepEqual(fromIdea.answer, { ok: true, data: { terminal: 'term-idea' } })
+  // The terminal of its spec comes before the one of its idea.
+  const both = { ...ofIdea, ...ofSpec }
+  const fromSpec = await rowRequest(epic, { storage: both, root: [agent('term-idea'), agent('term-spec')] })
+  assert.deepEqual(fromSpec.answer, { ok: true, data: { terminal: 'term-spec' } })
+  // The agent left the spec's terminal: the idea's is taken.
+  const specLeft = await rowRequest(epic, { storage: both, root: [shell('term-spec'), agent('term-idea')] })
+  assert.deepEqual(specLeft.answer, { ok: true, data: { terminal: 'term-idea' } })
+  // The epic's own session comes first: its working copy with an agent in it.
+  const own = await rowRequest(epic, {
+    storage: { ...both, [`session:${HANDLE}:15`]: { terminal: 'term-epic' } },
+    copy: { epic: 15, terminals: [agent('term-epic')] },
+    root: [agent('term-spec'), agent('term-idea')]
+  })
+  assert.deepEqual(own.answer, { ok: true, data: { terminal: 'term-epic' } })
+  assert.deepEqual(own.orca, ['worktree list', 'terminal list'])
+  // An epic that names no spec or idea it was made from: only its own session counts.
+  const plain = await rowRequest({ kind: 'epic', id: 15, spec: null, idea: null }, { storage: both, root: [agent('term-spec'), agent('term-idea')] })
+  assert.deepEqual(plain.answer, { ok: true, data: { terminal: null } })
+  assert.deepEqual(plain.orca, ['worktree list'])
+  // A spec or an idea of another epic lends it nothing.
+  const other = await rowRequest({ kind: 'epic', id: 15, spec: 21, idea: 6 }, { storage: both, root: [agent('term-spec'), agent('term-idea')] })
+  assert.deepEqual(other.answer, { ok: true, data: { terminal: null } })
+})
+
+test('a spec document inherits the terminal of its idea', async () => {
+  // The brainstorm of idea 6 wrote spec 30 and, on yes, goes on to its plan in the same terminal.
+  const ofIdea = { [`session:${HANDLE}:task-6`]: { terminal: 'term-idea' } }
+  const spec: RowRef = { kind: 'spec', doc: 30, idea: 6 }
+  const inherited = await rowRequest(spec, { storage: ofIdea, root: [shell('term-a'), agent('term-idea')] })
+  assert.deepEqual(inherited.answer, { ok: true, data: { terminal: 'term-idea' } })
+  assert.deepEqual(inherited.conport, [])
+  // Its own terminal comes first.
+  const both = { ...ofIdea, [`session:${HANDLE}:${doc(30)}`]: { terminal: 'term-spec' } }
+  const own = await rowRequest(spec, { storage: both, root: [agent('term-idea'), agent('term-spec')] })
+  assert.deepEqual(own.answer, { ok: true, data: { terminal: 'term-spec' } })
+  // The agent left the idea's terminal: no session.
+  const left = await rowRequest(spec, { storage: ofIdea, root: [shell('term-idea')] })
+  assert.deepEqual(left.answer, { ok: true, data: { terminal: null } })
+  // A spec that clarifies no idea, or another one, lends nothing.
+  for (const idea of [null, 7]) {
+    const none = await rowRequest({ kind: 'spec', doc: 30, idea }, { storage: ofIdea, root: [agent('term-idea')] })
+    assert.deepEqual(none.answer, { ok: true, data: { terminal: null } }, String(idea))
+  }
+})
+
+test('Plan & build of an epic keeps its terminal once the copy epic-N exists', async () => {
+  // spec.start of epic 9 opened the plan's terminal in the root and kept it under plan-9.
+  const m = await launchMachine()
+  const started = await m.worker.request('spec.start', { project: HANDLE, root: m.f.root, target: { epic: 9 }, agent: 'claude' })
+  assert.deepEqual(started, { ok: true, data: { terminal: 'term-1' } })
+  const storage = m.storage()
+  await m.worker.deactivate()
+  const epic: RowRef = { kind: 'epic', id: 9, spec: 22, idea: null }
+  // The lead session cut the copy epic-9 and still works in the root: no agent in the copy.
+  const withCopy = await rowRequest(epic, { storage, copy: { epic: 9, terminals: [shell('term-copy')] }, root: [agent('term-1')] })
+  assert.deepEqual(withCopy.answer, { ok: true, data: { terminal: 'term-1' } })
+  // Orca refuses to list the copy's terminals: the inherited terminal is found all the same.
+  const refused = await rowRequest(epic, { storage, copy: { epic: 9, terminals: [], refused: true }, root: [agent('term-1')] })
+  assert.deepEqual(refused.answer, { ok: true, data: { terminal: 'term-1' } })
+  // With none of the inherited terminals live, the refusal is answered.
+  const gone = await rowRequest(epic, { storage, copy: { epic: 9, terminals: [], refused: true }, root: [shell('term-1')] })
+  assert.equal(gone.answer !== null && typeof gone.answer === 'object' && 'ok' in gone.answer && gone.answer.ok, false)
+  // An agent of the epic in its copy is its own session, and comes first.
+  const own = await rowRequest(epic, { storage, copy: { epic: 9, terminals: [agent('term-epic')] }, root: [agent('term-1')] })
+  assert.deepEqual(own.answer, { ok: true, data: { terminal: 'term-epic' } })
+})
+
+test('the launcher of an earlier release is read once from prepare:<project> and moved to launcher:<project>', async () => {
+  const f = fake([{ match: 'epic agents', stdout: json(AGENTS) }])
+  const host = f.host({ 'agents.list': { agents: [] } }, { [`prepare:${HANDLE}`]: 'codex', 'prepare:prother000': 'cursor' })
+  const worker = await mountWorker(f.worker, { host })
+  const launcherOf = async (): Promise<unknown> => {
+    const answer = await worker.request('agents.get', { project: HANDLE, root: f.root })
+    return answer.ok ? answer.data.launcher : answer.error
+  }
+  assert.equal(await launcherOf(), 'codex')
+  // Moved: the new key holds it, the old one is gone; another project is left until it is read.
+  assert.deepEqual(host.data().storage, { [`launcher:${HANDLE}`]: 'codex', 'prepare:prother000': 'cursor' })
+  assert.equal(await launcherOf(), 'codex')
+  assert.deepEqual(host.data().storage, { [`launcher:${HANDLE}`]: 'codex', 'prepare:prother000': 'cursor' })
+  await worker.deactivate()
+  // A launcher already there wins over the old record, which is dropped all the same; a broken old record moves nothing.
+  const cases: Array<[Record<string, unknown>, unknown, Record<string, unknown>]> = [
+    [{ [`launcher:${HANDLE}`]: 'claude', [`prepare:${HANDLE}`]: 'codex' }, 'claude', { [`launcher:${HANDLE}`]: 'claude' }],
+    [{ [`prepare:${HANDLE}`]: 7 }, null, {}],
+    [{ [`prepare:${HANDLE}`]: '' }, null, {}]
+  ]
+  for (const [storage, launcher, after] of cases) {
+    const g = fake([{ match: 'epic agents', stdout: json(AGENTS) }])
+    const h = g.host({ 'agents.list': { agents: [] } }, storage)
+    const w = await mountWorker(g.worker, { host: h })
+    const answer = await w.request('agents.get', { project: HANDLE, root: g.root })
+    assert.equal(answer.ok && answer.data.launcher, launcher, JSON.stringify(storage))
+    assert.deepEqual(h.data().storage, after, JSON.stringify(storage))
+    await w.deactivate()
+  }
+})
+
+test('terminal.show brings the terminal of any row forward; a row without one is session_gone', async () => {
+  const storage = {
+    [`session:${HANDLE}:task-41`]: { terminal: 'term-idea' },
+    [`session:${HANDLE}:task-51`]: { terminal: 'term-task' },
+    [`session:${HANDLE}:${doc(30)}`]: { terminal: 'term-spec' }
+  }
+  const root = [agent('term-idea'), agent('term-task'), agent('term-spec')]
+  const shown: Array<[RowRef, string]> = [
+    [IDEA_41, 'term-idea'],
+    [{ kind: 'task', id: 51 }, 'term-task'],
+    [{ kind: 'spec', doc: 30, idea: null }, 'term-spec'],
+    // A spec document comes to the terminal of the idea it clarifies.
+    [{ kind: 'spec', doc: 32, idea: 41 }, 'term-idea'],
+    // An epic made from the idea comes to the terminal of its idea.
+    [{ kind: 'epic', id: 15, spec: null, idea: 41 }, 'term-idea']
+  ]
+  for (const [row, terminal] of shown) {
+    const asked = await rowRequest(row, { storage, root, request: 'terminal.show' })
+    assert.deepEqual(asked.answer, { ok: true, data: null }, JSON.stringify(row))
+    assert.deepEqual(asked.switched, [terminal], JSON.stringify(row))
+    // What is shown was found anew; nothing is stored by showing it.
+    assert.deepEqual(asked.storage, storage)
+  }
+  const tail = 'has no live session: its terminal is closed or its agent has exited'
+  const gone: Array<[RowRef, string]> = [
+    [{ kind: 'idea', id: 43 }, `Task 43 ${tail}`],
+    [{ kind: 'task', id: 52 }, `Task 52 ${tail}`],
+    [{ kind: 'spec', doc: 31, idea: 43 }, `Spec ${doc(31)} ${tail}`],
+    [{ kind: 'epic', id: 15, spec: 31, idea: 43 }, `Epic 15 ${tail}`],
+    // A terminal whose agent left is not brought forward.
+    [{ kind: 'idea', id: 44 }, `Task 44 ${tail}`]
+  ]
+  const left = { ...storage, [`session:${HANDLE}:task-44`]: { terminal: 'term-left' } }
+  for (const [row, message] of gone) {
+    const asked = await rowRequest(row, { storage: left, root: [...root, shell('term-left')], request: 'terminal.show' })
+    const error = { code: 'session_gone', message, action: 'Press Refresh.' }
+    assert.deepEqual(asked.answer, { ok: false, error }, JSON.stringify(row))
+    assert.deepEqual(asked.switched, [])
+    assert.deepEqual(refusalText(error), { what: message, action: 'Press Refresh.' })
+  }
+})
+
+test("not_an_idea, idea_taken, no_spec, spec_planned are said in the panel's words", async () => {
+  const ideaCases: Array<[string, string]> = [
+    ['not_an_idea', 'Task 41 is not an idea: it is an epic or a task of an epic'],
+    ['idea_taken', 'Task 41 is past brainstorming: it is in review, blocked or closed'],
+    ['task_not_found', 'Task 41 is not in the project']
+  ]
+  for (const [code, message] of ideaCases) {
+    const m = await launchMachine([promptRefused('idea', code)])
+    const answer = await m.worker.request('idea.start', { project: HANDLE, root: m.f.root, task: 41, agent: 'claude' })
+    const error = { code, message, action: 'Press Refresh.' }
+    assert.deepEqual(answer, { ok: false, error }, code)
+    assert.deepEqual(refusalText(error), { what: message, action: error.action })
+    assert.deepEqual(m.created(), [])
+    assert.deepEqual(m.storage(), {})
+    await m.worker.deactivate()
+  }
+  const specCases: Array<[{ doc: number } | { epic: number }, string, string]> = [
+    [{ doc: 30 }, 'no_spec', `Document ${doc(30)} is not a spec`],
+    [{ epic: 9 }, 'no_spec', 'Epic 9 has no spec'],
+    [{ doc: 30 }, 'spec_planned', `Spec ${doc(30)} already has its plan: its epic is In work`],
+    [{ epic: 9 }, 'spec_planned', 'Epic 9 already has its plan: it is In work'],
+    [{ epic: 99 }, 'task_not_found', 'Epic 99 is not in the project']
+  ]
+  for (const [target, code, message] of specCases) {
+    const m = await launchMachine([promptRefused('spec', code)])
+    const answer = await m.worker.request('spec.start', { project: HANDLE, root: m.f.root, target, agent: 'claude' })
+    const error = { code, message, action: 'Press Refresh.' }
+    assert.deepEqual(answer, { ok: false, error }, `${code} ${JSON.stringify(target)}`)
+    assert.deepEqual(refusalText(error), { what: message, action: error.action })
+    assert.deepEqual(m.created(), [])
+    assert.deepEqual(m.storage(), {})
+    await m.worker.deactivate()
+  }
+  // A code that is not about an idea or a spec reaches the panel as the CLI gave it.
+  const m = await launchMachine([promptRefused('idea', 'epic_ready')])
+  const answer = await m.worker.request('idea.start', { project: HANDLE, root: m.f.root, task: 41, agent: 'claude' })
+  assert.deepEqual(answer, { ok: false, error: { code: 'epic_ready', message: 'epic ready, as the CLI words it', action: 'do what the CLI says' } })
+  await m.worker.deactivate()
+})
+
+test('epic.start, epic.session, epic.tasks, task.hand answer as before', async () => {
+  const machine = await startMachine({
+    orca: [
+      SWITCHED,
+      { match: 'terminal list --worktree path:', stdout: json({ ok: true, result: { terminals: [agent(EPIC_TERMINAL)], truncated: false } }) }
+    ],
+    conport: [{ match: 'api tasks list', stdout: json({ tasks: EPIC_TASKS, total: EPIC_TASKS.length }) }]
+  })
+  const { f, worker } = machine
+  const epic = { project: HANDLE, root: f.root, epic: 7 }
+  const started = await startOn(machine, { harness: 'claude' })
+  assert.deepEqual(started.answer, { ok: true, data: { terminal: EPIC_TERMINAL, worktree: copyOf(f.root, 7) } })
+  const state = await worker.request('epic.session', epic)
+  assert.deepEqual(state.ok && { harness: state.data.harness, alive: state.data.alive, terminal: state.data.terminal }, {
+    harness: 'claude',
+    alive: true,
+    terminal: EPIC_TERMINAL
+  })
+  const tasks = await worker.request('epic.tasks', epic)
+  assert.equal(tasks.ok && tasks.data.length, EPIC_TASKS.length)
+  await worker.deactivate()
+  // A task handed answers its terminal as before, and its row finds that terminal later.
+  const handed = await hand(51, 'do', 'codex', [], HANDLE)
+  assert.deepEqual(handed.answer, { ok: true, data: { terminal: 'term-1' } })
+  assert.deepEqual(handed.storage, { [`launcher:${HANDLE}`]: 'codex', [`session:${HANDLE}:task-51`]: { terminal: 'term-1' } })
 })

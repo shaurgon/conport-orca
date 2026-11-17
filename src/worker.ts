@@ -1,6 +1,7 @@
-// The plugin's worker: runs the conport CLI and orca as child processes for the panel. It reads
-// only when the panel asks: no timer, no status bar item, no notification — the state of the
-// agents is Orca's own.
+// The plugin's worker: runs the conport CLI and orca as child processes for the panel. Each read
+// is one request of the panel, which times its reads of the list itself; the worker keeps nothing
+// running between requests. No status bar item, no notification — the state of the agents is
+// Orca's own.
 import { readFile, realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join, resolve as resolvePath, sep } from 'node:path'
@@ -11,10 +12,15 @@ import {
   DEFAULT_ROLES,
   epicPromptArgs,
   HANDLE_FORM,
+  ideaPromptArgs,
   interpret,
-  PREPARE_AGENTS,
-  preparePromptArgs,
+  proposalAcceptArgs,
+  proposalDeclineArgs,
   ROLE_TYPE_FORM,
+  sddListArgs,
+  sddTakenArgs,
+  specPromptArgs,
+  TASK_AGENTS,
   taskPromptArgs
 } from './cli'
 import { runProcess } from './exec'
@@ -27,11 +33,21 @@ import type {
   RepoContext,
   Result,
   Roles,
+  RowRef,
+  SddList,
   SubagentList,
-  TaskList
+  TakenList
 } from './protocol'
 import { readSettings, type SettingsText } from './settings'
-import { AGENT_MISSING_ACTION, HARNESS_MISSING_ACTION, type PromptSubject, promptRefusal, REFUSED } from './text'
+import {
+  AGENT_MISSING_ACTION,
+  HARNESS_MISSING_ACTION,
+  type PromptSubject,
+  promptRefusal,
+  proposalRefusal,
+  REFUSED,
+  type SpecTarget
+} from './text'
 
 /** How the worker starts the three programs it drives. */
 export interface WorkerDeps {
@@ -86,6 +102,9 @@ const ok = <T>(data: T): { ok: true; data: T } => ({ ok: true, data })
 const refuse = (code: string, { what, action }: { what: string; action: string }) => fail(code, what, action)
 
 const FORBID_VAR = 'CONPORT_SETTINGS_FORBID_ROOT'
+
+/** The ConPort dashboard, where a spec is opened. */
+const DASHBOARD = 'https://me.conport.app'
 
 /** How long git may take to say anything about the settings files, as every reader of them waits. */
 export const GIT_TIMEOUT_MS = 5000
@@ -459,9 +478,21 @@ export function createWorker(deps: WorkerDeps): {
       return ok(await contextOf(root))
     })
 
-    orca.panels.handle('epics.list', ({ project, root }) =>
-      conport(['epic', 'list', '--project', project, '--json'], root)
-    )
+    orca.panels.handle('sdd.list', ({ project, root }) => conport<SddList>(sddListArgs(project), root))
+
+    orca.panels.handle('sdd.taken', ({ project, root }) => conport<TakenList>(sddTakenArgs(project), root))
+
+    // The address of the project in the dashboard: its canonical name `<team>/<name>` names the
+    // team that holds it, and an address of the dashboard names that team.
+    orca.panels.handle('project.page', async ({ project, root }) => {
+      const handle = byHandle(project)
+      if (!handle.ok) return handle
+      const read = await conport<{ canonical_name?: unknown; handle?: unknown }>(['api', 'projects', 'get', '--project', handle.data], root)
+      if (!read.ok) return read
+      const team = typeof read.data.canonical_name === 'string' ? read.data.canonical_name.split('/')[0] : ''
+      if (!team) return fail('bad_output', 'conport answered without the team of the project', 'Update conport.')
+      return ok({ url: `${DASHBOARD}/t/${encodeURIComponent(team)}/p/${handle.data}` })
+    })
 
     /** The agent kinds Orca runs in the focused workspace; none when the host cannot tell. */
     const kindsInOrca = async (): Promise<Set<string>> => {
@@ -483,11 +514,25 @@ export function createWorker(deps: WorkerDeps): {
       return ok(answer.data.agents.map((a) => (a.found || !inOrca.has(a.id) ? a : { ...a, found: true })))
     }
 
+    /**
+     * The agent of the last launch in the project. An earlier release kept it under
+     * `prepare:<project>`: that record is read once, moved to `launcher:<project>` unless a
+     * launcher is there already, and dropped.
+     */
+    const launcherOf = async (project: string): Promise<string | null> => {
+      const name = (value: unknown): string | null => (typeof value === 'string' && value !== '' ? value : null)
+      const [launcher, earlier] = await Promise.all([orca.storage.get(`launcher:${project}`), orca.storage.get(`prepare:${project}`)])
+      if (earlier === undefined || earlier === null) return name(launcher)
+      const moved = name(launcher) ?? name(earlier)
+      if (name(launcher) === null && moved !== null) await orca.storage.set(`launcher:${project}`, moved)
+      await orca.storage.delete(`prepare:${project}`)
+      return moved
+    }
+
     orca.panels.handle('agents.get', async ({ project, root }) => {
       const agents = await agentKinds(root)
       if (!agents.ok) return agents
-      const preparer = await orca.storage.get(`prepare:${project}`)
-      return ok({ agents: agents.data, preparer: typeof preparer === 'string' ? preparer : null })
+      return ok({ agents: agents.data, launcher: await launcherOf(project) })
     })
 
     /** Asks orca to bring a terminal to the front. */
@@ -507,7 +552,7 @@ export function createWorker(deps: WorkerDeps): {
      * only such an agent starts a talk with the task it is given.
      */
     const agentCommand = async (root: string, agent: string, noun: 'agent' | 'harness' = 'agent'): Promise<Result<string>> => {
-      if (!PREPARE_AGENTS.includes(agent)) return refuse('agent_cannot_prepare', REFUSED.agentCannotPrepare(noun, agent))
+      if (!TASK_AGENTS.includes(agent)) return refuse('agent_cannot_prepare', REFUSED.agentCannotPrepare(noun, agent))
       const kinds = await agentKinds(root)
       if (!kinds.ok) return kinds
       const kind = kinds.data.find((a) => a.id === agent)
@@ -520,31 +565,145 @@ export function createWorker(deps: WorkerDeps): {
     }
 
     /**
-     * Opens `agent` with its one task in a terminal of the root. Nothing is remembered here: the
-     * preparation of an epic and the hand of a task remember their agent themselves.
+     * Opens `agent` with its one task in a terminal of the root. Nothing is remembered here: each
+     * launch remembers its agent and its terminal itself.
      */
     const startAgent = async (root: string, agent: string, title: string, task: string): Promise<Result<{ terminal: string }>> => {
       const command = await agentCommand(root, agent)
       if (!command.ok) return command
-      const terminal = await terminalInRoot(root, title, commandLine([command.data, task]))
+      return openAgent(root, command.data, title, task)
+    }
+
+    /** Opens the agent's `command` with its one task in a terminal of the root, brought to the front. */
+    const openAgent = async (root: string, command: string, title: string, task: string): Promise<Result<{ terminal: string }>> => {
+      const terminal = await terminalInRoot(root, title, commandLine([command, task]))
       if (!terminal.ok) return terminal
       // The person talks with the agent there: the terminal comes to the front.
       await bringForward(terminal.data)
       return ok({ terminal: terminal.data })
     }
 
-    /** Remembers the agent of a preparation or of a hand for the project, once its terminal is open. */
+    /**
+     * What a start remembers — the choice of an epic, the terminal of a row — is kept under the
+     * handle of its project: asked or launched by a name, the records would not be found, and a
+     * live session would be told as none.
+     */
+    const byHandle = (project: unknown): Result<string> =>
+      typeof project === 'string' && HANDLE_FORM.test(project)
+        ? ok(project)
+        : fail('project_not_handle', "The project is not named by its handle: the choice and the epic's session are kept under the project's handle", 'Press Refresh.')
+
+    /** Remembers the agent of a launch for the project, once its terminal is open. */
     const rememberAgent = async <T>(project: string, agent: string, started: Result<T>): Promise<Result<T>> => {
-      if (started.ok) await orca.storage.set(`prepare:${project}`, agent)
+      if (started.ok) await orca.storage.set(`launcher:${project}`, agent)
       return started
     }
 
-    // An epic without a spec or a plan: its agent talks with the person in a terminal of the root.
-    // The CLI reads the epic afresh and prints the task for what it lacks now, or refuses.
-    orca.panels.handle('epic.prepare', async ({ project, root, epic, agent }) => {
-      const task = await promptText(preparePromptArgs({ epic, project }), root, { command: 'prepare', epic })
-      if (!task.ok) return task
-      return rememberAgent(project, agent, await startAgent(root, agent, `conport prepare ${epic}`, task.data))
+    /**
+     * The key a row's terminal is kept under: `task-<id>` for an idea or a task, `doc-<N>` for a
+     * spec document, `plan-<epic>` for the plan of an epic written in the root (Plan & build of an
+     * epic with a spec). The session of an epic is kept apart, under the bare number, by `epic.start`.
+     */
+    type SessionOf = { task: number } | { doc: number } | { plan: number }
+    const sessionKey = (project: string, row: SessionOf): string =>
+      `session:${project}:${'task' in row ? `task-${row.task}` : 'doc' in row ? `doc-${row.doc}` : `plan-${row.plan}`}`
+
+    /** Remembers the agent of a launch and the terminal it opened for its row. */
+    const rememberLaunch = async (
+      project: string,
+      agent: string,
+      row: SessionOf,
+      started: Result<{ terminal: string }>
+    ): Promise<Result<{ terminal: string }>> => {
+      if (started.ok) await orca.storage.set(sessionKey(project, row), { terminal: started.data.terminal })
+      return rememberAgent(project, agent, started)
+    }
+
+    /** An agent that cannot be told its task, refused before anything is read or written. */
+    const cannotTakeTask = (agent: string): Result<never> | null =>
+      TASK_AGENTS.includes(agent) ? null : refuse('agent_cannot_prepare', REFUSED.agentCannotPrepare('agent', agent))
+
+    /**
+     * Opens the agent of an idea in a terminal of the root with the task `conport prompt idea`
+     * prints; `command` is the agent's, when the launch has looked it up already.
+     */
+    const startIdea = async (
+      project: string,
+      root: string,
+      task: number,
+      agent: string,
+      command?: string
+    ): Promise<Result<{ terminal: string }>> => {
+      const order = await promptText(ideaPromptArgs({ task, project, agent, root }), root, { command: 'idea', task })
+      if (!order.ok) return order
+      const title = `conport idea ${task}`
+      const started = command === undefined ? await startAgent(root, agent, title, order.data) : await openAgent(root, command, title, order.data)
+      return rememberLaunch(project, agent, { task }, started)
+    }
+
+    // An idea: its agent works it through with the person in a terminal of the root. The CLI reads
+    // the task afresh and refuses one that is no longer an idea.
+    orca.panels.handle('idea.start', async ({ project, root, task, agent }) => {
+      const handle = byHandle(project)
+      if (!handle.ok) return handle
+      const cannot = cannotTakeTask(agent)
+      if (cannot) return cannot
+      return startIdea(handle.data, root, task, agent)
+    })
+
+    // A proposal of the team: accepted first — the CLI finds or makes its idea and answers it —
+    // then that idea is started. The agent is looked up before the accept: a proposal is not taken
+    // for an agent that cannot be started. A refused accept opens nothing; an accept repeated
+    // answers the same idea.
+    orca.panels.handle('proposal.start', async ({ project: named, root, doc, agent }) => {
+      const handle = byHandle(named)
+      if (!handle.ok) return handle
+      const project = handle.data
+      const command = await agentCommand(root, agent)
+      if (!command.ok) return command
+      const accepted = await conport<{ task?: unknown }>(proposalAcceptArgs({ doc, project }), root)
+      if (!accepted.ok) {
+        const said = proposalRefusal(accepted.error.code, doc)
+        return said ? refuse(accepted.error.code, said) : accepted
+      }
+      const { task } = accepted.data
+      if (typeof task !== 'number' || !Number.isInteger(task)) {
+        return fail('bad_output', 'conport accepted the proposal without naming its task', 'Update conport.')
+      }
+      const started = await startIdea(project, root, task, agent, command.data)
+      return started.ok ? ok({ terminal: started.data.terminal, task }) : started
+    })
+
+    // A spec without a plan, as a document or as the epic that has it: its agent writes the plan with
+    // the person in a terminal of the root and builds the epic. The epic is cut from the branch of
+    // the main working copy, as `epic.start` cuts it.
+    orca.panels.handle('spec.start', async ({ project: named, root, target, agent }) => {
+      const handle = byHandle(named)
+      if (!handle.ok) return handle
+      const project = handle.data
+      const cannot = cannotTakeTask(agent)
+      if (cannot) return cannot
+      const copies = await worktreesOf(root)
+      if (!copies.ok) return copies
+      const spec: SpecTarget = 'doc' in target ? { doc: target.doc } : { epic: target.epic }
+      const args = specPromptArgs({ target: spec, project, agent, root, base: copies.data.base })
+      const order = await promptText(args, root, { command: 'spec', target: spec })
+      if (!order.ok) return order
+      const title = 'doc' in spec ? `conport spec doc-${spec.doc}` : `conport spec ${spec.epic}`
+      // The plan of an epic is written in the root: kept apart from the session of the epic, which
+      // `epic.start` keeps under the bare number and looks for in the working copy of the epic.
+      const row: SessionOf = 'doc' in spec ? { doc: spec.doc } : { plan: spec.epic }
+      return rememberLaunch(project, agent, row, await startAgent(root, agent, title, order.data))
+    })
+
+    // A proposal declined with the reason the person wrote: no agent is started.
+    orca.panels.handle('proposal.decline', async ({ project, root, doc, reason }) => {
+      const why = typeof reason === 'string' ? reason.trim() : ''
+      if (why === '') return refuse('reason_missing', REFUSED.reasonMissing)
+      const declined = await conport<unknown>(proposalDeclineArgs({ doc, project, reason: why }), root)
+      if (declined.ok) return ok(null)
+      const said = proposalRefusal(declined.error.code, doc)
+      return said ? refuse(declined.error.code, said) : declined
     })
 
     // An epic that has its spec and its plan: its harness gets the task of the epic in a terminal
@@ -666,15 +825,6 @@ export function createWorker(deps: WorkerDeps): {
       return ok(null)
     }
 
-    /**
-     * A start remembers an epic under the handle of its project: asked by a name, the records
-     * would not be found, and a live session would be told as none.
-     */
-    const byHandle = (project: unknown): Result<string> =>
-      typeof project === 'string' && HANDLE_FORM.test(project)
-        ? ok(project)
-        : fail('project_not_handle', "The project is not named by its handle: the choice and the epic's session are kept under the project's handle", 'Press Refresh.')
-
     /** The working copy of the epic and the terminal of its live session, as orca tells them now. */
     const liveSession = async (
       root: string,
@@ -740,34 +890,85 @@ export function createWorker(deps: WorkerDeps): {
       return conport<SubagentList>(['epic', 'subagents', '--harness', harness, '--json'], root)
     })
 
-    // Brings the terminal of the epic's live session to the front. The terminal is found anew by
-    // the rule of `epic.session`: the request names an epic, never a terminal of its own choice.
-    // The panel asked for it, so a refusal of orca is told, not only logged.
-    orca.panels.handle('terminal.show', async ({ project, root, epic }) => {
+    /**
+     * The terminal this host opened in the root under `key`, while an agent runs in it; none when
+     * nothing is remembered there, and then orca is not asked.
+     */
+    const rootTerminal = async (root: string, key: string): Promise<Result<string | null>> => {
+      const record = await orca.storage.get(key)
+      const remembered = (record as { terminal?: unknown } | null | undefined)?.terminal
+      if (typeof remembered !== 'string' || remembered === '') return ok(null)
+      return liveTerminal(root, remembered, false)
+    }
+
+    /** The first live terminal in the root among those kept under `sources`, in their order. */
+    const firstRootTerminal = async (handle: string, root: string, sources: SessionOf[]): Promise<Result<string | null>> => {
+      for (const source of sources) {
+        const live = await rootTerminal(root, sessionKey(handle, source))
+        if (!live.ok || live.data !== null) return live
+      }
+      return ok(null)
+    }
+
+    /**
+     * The terminal of a row's live session. An idea and a task have only the terminal opened for
+     * them in the root. A spec document has its own, else that of the idea it clarifies: the
+     * brainstorm of the idea goes on to the plan in the same session. An epic has its own session
+     * first, by the rule of `epic.session`; else the session its plan was written in (Plan & build
+     * of the epic), else that of the spec it was made from, else that of its idea: one session goes
+     * from the idea through the spec and the plan into the epic. A refusal of orca on the epic's
+     * own session does not stop the search among those it inherits; it is answered only when none
+     * of them is live.
+     */
+    const rowTerminal = async (handle: string, root: string, row: RowRef): Promise<Result<string | null>> => {
+      if (row.kind === 'idea' || row.kind === 'task') return rootTerminal(root, sessionKey(handle, { task: row.id }))
+      if (row.kind === 'spec') {
+        return firstRootTerminal(handle, root, [{ doc: row.doc }, ...(typeof row.idea === 'number' ? [{ task: row.idea }] : [])])
+      }
+      const own = await liveSession(root, row.id, await chosenFor(handle, row.id))
+      if (own.ok && own.data.terminal !== null) return ok(own.data.terminal)
+      const inherited = await firstRootTerminal(handle, root, [
+        { plan: row.id },
+        ...(row.spec === null ? [] : [{ doc: row.spec }]),
+        ...(row.idea === null ? [] : [{ task: row.idea }])
+      ])
+      if (!inherited.ok || inherited.data !== null || own.ok) return inherited
+      return own
+    }
+
+    // The terminal of a row's live session, as orca tells it now. ConPort and git are not asked.
+    orca.panels.handle('row.session', async ({ project, root, row }) => {
       const handle = byHandle(project)
       if (!handle.ok) return handle
-      const live = await liveSession(root, epic, await chosenFor(handle.data, epic))
+      const live = await rowTerminal(handle.data, root, row)
+      return live.ok ? ok({ terminal: live.data }) : live
+    })
+
+    // Brings the terminal of a row's live session to the front. The terminal is found anew by the
+    // rule of `row.session`: the request names a row, never a terminal of its own choice. The panel
+    // asked for it, so a refusal of orca is told, not only logged.
+    orca.panels.handle('terminal.show', async ({ project, root, row }) => {
+      const handle = byHandle(project)
+      if (!handle.ok) return handle
+      const live = await rowTerminal(handle.data, root, row)
       if (!live.ok) return live
-      if (live.data.terminal === null) {
-        return fail('session_gone', `Epic ${epic} has no live session: its terminal is closed or its agent has exited`, 'Press Refresh.')
-      }
-      const shown = await switchTo(live.data.terminal)
+      if (live.data === null) return refuse('session_gone', REFUSED.sessionGone(row))
+      const shown = await switchTo(live.data)
       return shown.ok ? ok(null) : shown
     })
 
-    orca.panels.handle('tasks.list', async ({ project, root }) => {
-      const list = await conport<TaskList>(['task', 'list', '--project', project, '--json'], root)
-      return list.ok ? ok(list.data.tasks) : list
-    })
-
-    // A task outside the epics, to do, to review or to fix: the CLI reads it afresh, so a task done
-    // or taken meanwhile is not handed again. It takes only an agent that can be given a task.
-    orca.panels.handle('task.hand', async ({ project, root, task, agent, mode }) => {
-      if (!PREPARE_AGENTS.includes(agent)) return refuse('agent_cannot_prepare', REFUSED.agentCannotPrepare('agent', agent))
+    // A task of an epic outside SDD to do, or a task to review or to fix: the CLI reads it afresh,
+    // so a task done or taken meanwhile is not handed again. It takes only an agent that can be given a task.
+    orca.panels.handle('task.hand', async ({ project: named, root, task, agent, mode }) => {
+      const handle = byHandle(named)
+      if (!handle.ok) return handle
+      const project = handle.data
+      const cannot = cannotTakeTask(agent)
+      if (cannot) return cannot
       const order = await promptText(taskPromptArgs({ task, project, mode, agent, root }), root, { command: 'task', task, mode })
       if (!order.ok) return order
       const title = `conport ${{ do: 'task', review: 'review', fix: 'fix' }[mode]} ${task}`
-      return rememberAgent(project, agent, await startAgent(root, agent, title, order.data))
+      return rememberLaunch(project, agent, { task }, await startAgent(root, agent, title, order.data))
     })
   }
 

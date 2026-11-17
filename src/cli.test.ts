@@ -11,14 +11,22 @@ import {
   CONPORT,
   DEFAULT_ROLES,
   FIXER_TYPE,
-  PREPARE_AGENTS,
   ROLE_TYPE_FORM,
+  TASK_AGENTS,
   commandLine,
   epicPromptArgs,
-  preparePromptArgs,
+  ideaPromptArgs,
+  proposalAcceptArgs,
+  proposalDeclineArgs,
+  sddListArgs,
+  sddTakenArgs,
+  specPromptArgs,
   taskPromptArgs
 } from './cli'
 import type { HandMode, Roles } from './protocol'
+
+/** A document as the CLI names it, `doc-<N>`, made from its number. */
+const doc = (n: number): string => `doc-${n}`
 
 const OTHER_ROLES: Roles = {
   implementer: 'sdd-implementer',
@@ -51,11 +59,13 @@ test('a role type is a plain name', () => {
 })
 
 test('only the agents that take their task as an argument can be handed one', () => {
-  assert.deepEqual(PREPARE_AGENTS, ['claude', 'codex', 'cursor'])
+  assert.deepEqual(TASK_AGENTS, ['claude', 'codex', 'cursor'])
+  // The name of an earlier release is gone: every reader takes TASK_AGENTS.
+  assert.equal('PREPARE_AGENTS' in cli, false)
 })
 
 test('the texts of the tasks are no longer built by the plugin', () => {
-  // The CLI prints them: `conport prompt epic|prepare|task`.
+  // The CLI prints them: `conport prompt epic|idea|spec|task`.
   for (const name of ['epicTask', 'epicWorkflowTask', 'prepareTask', 'handTask', 'QUOTES']) {
     assert.equal(name in cli, false, name)
   }
@@ -89,16 +99,43 @@ test('the epic names no way: the SDD skill is the only one', () => {
   }
 })
 
-test('the preparation of an epic is asked for the panel of Orca', () => {
-  assert.deepEqual(preparePromptArgs({ epic: 10, project: HANDLE }), ['prompt', 'prepare', '10', '-p', HANDLE, '--host', 'orca', '--json'])
+test('nothing of the preparation of an epic is left: no prompt prepare, no document an epic lacks', () => {
+  for (const name of ['preparePromptArgs', 'missingDocument']) assert.equal(name in cli, false, name)
 })
 
-test('a task outside the epics is asked for the panel of Orca, in its mode, for its agent and root', () => {
+test('a task is asked for the panel of Orca, in its mode, for its agent and root', () => {
   for (const mode of ['do', 'review', 'fix'] as HandMode[]) {
     assert.deepEqual(taskPromptArgs({ task: 41, project: HANDLE, mode, agent: 'codex', root: '/work/app' }), [
       'prompt', 'task', '41', '-p', HANDLE, '--host', 'orca', '--mode', mode, '--agent', 'codex', '--root', '/work/app', '--json'
     ])
   }
+})
+
+test('the stages of the project are read by conport sdd list, the taken rows by its light read', () => {
+  assert.deepEqual(sddListArgs(HANDLE), ['sdd', 'list', '-p', HANDLE, '--json'])
+  assert.deepEqual(sddTakenArgs(HANDLE), ['sdd', 'list', '--taken', '-p', HANDLE, '--json'])
+})
+
+test('an idea is asked for the panel of Orca, for its agent and the root of its small fix', () => {
+  assert.deepEqual(ideaPromptArgs({ task: 41, project: HANDLE, agent: 'codex', root: '/work/app' }), [
+    'prompt', 'idea', '41', '-p', HANDLE, '--host', 'orca', '--agent', 'codex', '--root', '/work/app', '--json'
+  ])
+})
+
+test('a spec is asked by its document or by its epic, with the root and the base of the epic branch', () => {
+  assert.deepEqual(specPromptArgs({ target: { doc: 30 }, project: HANDLE, agent: 'claude', root: '/work/app', base: 'develop' }), [
+    'prompt', 'spec', doc(30), '-p', HANDLE, '--host', 'orca', '--agent', 'claude', '--root', '/work/app', '--base', 'develop', '--json'
+  ])
+  assert.deepEqual(specPromptArgs({ target: { epic: 9 }, project: HANDLE, agent: 'cursor', root: '/work/app', base: 'main' }), [
+    'prompt', 'spec', 'task-9', '-p', HANDLE, '--host', 'orca', '--agent', 'cursor', '--root', '/work/app', '--base', 'main', '--json'
+  ])
+})
+
+test('a proposal is accepted and declined by its document', () => {
+  assert.deepEqual(proposalAcceptArgs({ doc: 301, project: HANDLE }), ['proposal', 'accept', doc(301), '-p', HANDLE, '--json'])
+  assert.deepEqual(proposalDeclineArgs({ doc: 301, project: HANDLE, reason: 'Out of scope for this year' }), [
+    'proposal', 'decline', doc(301), '-p', HANDLE, '--reason', 'Out of scope for this year', '--json'
+  ])
 })
 
 test('a value the shell would read is one argument of the command: the CLI is run without a shell', () => {
@@ -112,6 +149,11 @@ test('a value the shell would read is one argument of the command: the CLI is ru
   assert.equal(epic[epic.indexOf('--base') + 1], base)
   const task = taskPromptArgs({ task: 41, project, mode: 'do', agent: 'claude', root })
   assert.equal(task[task.indexOf('--root') + 1], root)
+  const spec = specPromptArgs({ target: { doc: 30 }, project, agent: 'claude', root, base })
+  assert.equal(spec[spec.indexOf('--base') + 1], base)
+  const reason = `it's "not" $now \`x\``
+  const decline = proposalDeclineArgs({ doc: 301, project, reason })
+  assert.equal(decline[decline.indexOf('--reason') + 1], reason)
 })
 
 test('the task of an agent survives the shell as one argument', () => {
