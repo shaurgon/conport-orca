@@ -130,9 +130,9 @@ Before installing, make sure of six things:
   `superpowers:subagent-driven-development` and by the conport skill, and starts each role as a
   subagent type of the conport plugin. Codex and Cursor need neither, they work by the role texts
   of the CLI.
-- **The releases that go together:** update Orca's conport plugin to 0.8.0 and the Herdr mod to
-  0.3.0 together with the conport plugin 25: earlier releases of this plugin offer a mode the
-  conport plugin 25 no longer has.
+- **The releases that go together:** Orca's conport plugin 0.9.0 or later and the Herdr mod 0.4.0
+  or later go with the conport plugin 25.1 or later: earlier releases of this plugin show the old
+  tabs and prepare a spec with an epic, which the conport plugin 25.1 no longer does.
 
 Then, in Orca:
 
