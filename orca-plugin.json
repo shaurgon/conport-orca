@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "conport-orca",
   "name": "ConPort SDD",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Controls ConPort projects from Orca by SDD stage: epics in work with their spec and plan, specs waiting for a plan, ideas and team proposals not worked through, and epics outside SDD; brainstorms an idea, plans and builds a spec, and starts the lead session of an epic in a terminal of the chosen harness.",
   "license": "MIT",
   "engines": {
