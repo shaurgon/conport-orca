@@ -38,6 +38,7 @@ import {
 import { DEFAULT_ROLES, HANDLE_FORM, handMode, TASK_AGENTS } from './cli'
 import type {
   AgentKind,
+  Assignee,
   EpicSession,
   EpicTask,
   HandMode,
@@ -62,6 +63,8 @@ import {
   FULL_READ_MS,
   ideaRows,
   isProposal,
+  leadOf,
+  ledByOther,
   needsFullRead,
   POLL_TAKEN_MS,
   rowActions,
@@ -85,6 +88,7 @@ import {
   NO_MILESTONE,
   NO_TASK_AGENT,
   oneLine,
+  personName,
   refusalText,
   releaseLine,
   RESTART_NOTE,
@@ -104,12 +108,14 @@ import {
   startNotice,
   TAKE_OVER_CONFIRM,
   TAKE_OVER_NOTE,
+  takeOverQuestion,
   TASK_STATUS,
   taskCounts,
   taskCountsLine,
   taskState,
   TYPE_MISSING_NOTE,
-  updatedLine
+  updatedLine,
+  withAssignee
 } from './text'
 
 /** `npx` may fetch the CLI on its first call. */
@@ -126,12 +132,13 @@ interface Choice {
 /**
  * What the sheet opened over the sections is for: an idea or a proposal to brainstorm, a spec to
  * plan and build, a proposal to decline, or a task to hand to an agent. A test of `kind` narrows
- * to the member of each.
+ * to the member of each. `takeOver`: the person said yes to taking over an idea or the epic of a
+ * spec another person leads.
  */
 type Sheet =
-  | { kind: 'idea'; idea: IdeaRow }
+  | { kind: 'idea'; idea: IdeaRow; takeOver?: true }
   | { kind: 'proposal'; proposal: ProposalRow }
-  | { kind: 'spec'; spec: SpecRow }
+  | { kind: 'spec'; spec: SpecRow; takeOver?: true }
   | { kind: 'decline'; proposal: ProposalRow }
   | { kind: HandMode; task: IdeaRow }
 
@@ -263,6 +270,33 @@ function taken(): Set<number> {
   const list = read(sdd)
   return list?.ok ? takenRows(list.data, read(takenList)) : new Set()
 }
+
+/** Who leads a row of the chosen project now, by the last reads; null for nobody. */
+const leadNow = (id: number, row: { assignee?: Assignee | null }): Assignee | null => leadOf(id, row, read(takenList))
+
+/** The person who leads a row when someone other than the caller does, by the last reads. */
+function otherLead(id: number, row: { assignee?: Assignee | null }): Assignee | null {
+  const list = read(sdd)
+  return ledByOther(leadNow(id, row), list?.ok ? list.data.me : null)
+}
+
+/**
+ * The person who leads the row of a Take over when someone other than the caller does: the row as
+ * the list now holds it, else as it was asked.
+ */
+function otherLeadOf(then: Sheet): Assignee | null {
+  const list = read(sdd)
+  const now = (list?.ok ? sheetAfter(then, list) : null) ?? then
+  if (now.kind === 'idea') return otherLead(now.idea.id, now.idea)
+  if (now.kind === 'spec' && now.spec.epic !== null) return otherLead(now.spec.epic, now.spec)
+  return null
+}
+
+/** The sheet a yes to taking over a row another person leads opens: its start lets the agent take it over. */
+const takenOver = (then: Sheet): Sheet => (then.kind === 'idea' || then.kind === 'spec' ? { ...then, takeOver: true } : then)
+
+/** What a start of the sheet adds to its request: the take over the person said yes to, else nothing. */
+const takeOverFlag = (open: Sheet): { takeOver?: true } => ((open.kind === 'idea' || open.kind === 'spec') && open.takeOver ? { takeOver: true } : {})
 
 function setOpened(epic: number | null): void {
   const root = read(chosen)
@@ -465,7 +499,7 @@ function sheetAfter(open: Sheet, list: Result<SddList>): Sheet | null {
   switch (open.kind) {
     case 'idea': {
       const idea = list.data.ideas.find((i) => i.id === open.idea.id)
-      return idea && handMode(idea) !== 'review' && handMode(idea) !== 'fix' && idea.status !== 'BLOCKED' ? { kind: 'idea', idea } : null
+      return idea && handMode(idea) !== 'review' && handMode(idea) !== 'fix' && idea.status !== 'BLOCKED' ? { ...open, idea } : null
     }
     case 'proposal':
     case 'decline': {
@@ -474,7 +508,7 @@ function sheetAfter(open: Sheet, list: Result<SddList>): Sheet | null {
     }
     case 'spec': {
       const spec = list.data.specs.find((s) => s.doc === open.spec.doc)
-      return spec ? { kind: 'spec', spec } : null
+      return spec ? { ...open, spec } : null
     }
     default: {
       const task = sameIdea(list.data, open.task.id)
@@ -758,8 +792,11 @@ function roleLists(choice: Choice): RoleLists | null {
   return { on: true, types: answer.data.subagents.map((s) => s.type), roles: choice.roles }
 }
 
-/** Starts the open epic as chosen, then reads its session and its tasks again. */
-async function start(): Promise<void> {
+/**
+ * Starts the open epic as chosen, then reads its session and its tasks again; `takeOver` when the
+ * person said yes to taking over an epic another person leads.
+ */
+async function start({ takeOver = false }: { takeOver?: boolean } = {}): Promise<void> {
   const target = ref()
   const choice = choiceOf()
   const lists = choice === null ? null : roleLists(choice)
@@ -767,7 +804,7 @@ async function start(): Promise<void> {
   set(confirmAgain, false)
   const key = epicKey(target.root, target.epic)
   const opened = await act(
-    () => plugin.request('epic.start', { ...target, harness: choice.harness, roles: lists.roles }, SLOW),
+    () => plugin.request('epic.start', { ...target, harness: choice.harness, roles: lists.roles, ...(takeOver ? { takeOver: true } : {}) }, SLOW),
     () => {
       set(started, key)
       set(notice, startNotice(target.epic))
@@ -894,7 +931,11 @@ async function submitSheet(): Promise<void> {
   switch (open.kind) {
     case 'idea': {
       const task = open.idea.id
-      opened = await act(() => plugin.request('idea.start', { project, root, task, agent }, SLOW), () => done(ideaNotice(task, name)), still)
+      opened = await act(
+        () => plugin.request('idea.start', { project, root, task, agent, ...takeOverFlag(open) }, SLOW),
+        () => done(ideaNotice(task, name)),
+        still
+      )
       break
     }
     case 'proposal': {
@@ -904,7 +945,11 @@ async function submitSheet(): Promise<void> {
     }
     case 'spec': {
       const target = open.spec.epic === null ? { doc: open.spec.doc } : { epic: open.spec.epic }
-      opened = await act(() => plugin.request('spec.start', { project, root, target, agent }, SLOW), () => done(specNotice(target, name)), still)
+      opened = await act(
+        () => plugin.request('spec.start', { project, root, target, agent, ...takeOverFlag(open) }, SLOW),
+        () => done(specNotice(target, name)),
+        still
+      )
       break
     }
     default: {
@@ -1271,7 +1316,7 @@ function inWorkRow(epic: InWorkRow, isTaken: boolean) {
   // Ready to merge before anything: its lead session keeps it in progress until the merge.
   const line = !epic.ready && isTaken ? updatedLine(updatedAt(epic.id, epic), new Date()) : state.line
   return (
-    <ListItem key={key} title={title} description={line} icon="layers" onPress={() => openEpic(epic.id)}>
+    <ListItem key={key} title={title} description={withAssignee(line, leadNow(epic.id, epic))} icon="layers" onPress={() => openEpic(epic.id)}>
       {state.share === null ? null : <Progress label={`${state.closed} of ${state.total} closed`} labelHidden value={state.share} />}
     </ListItem>
   )
@@ -1282,17 +1327,18 @@ function specRow(spec: SpecRow, isTaken: boolean) {
   const title = spec.epic === null ? `doc-${spec.doc} · ${spec.title}` : `${spec.epic} · ${spec.title}`
   const plain = spec.epic === null ? (spec.idea === null ? 'Spec' : `Spec of idea ${spec.idea}`) : `Epic with a spec, no plan`
   const description = isTaken && spec.epic !== null ? updatedLine(updatedAt(spec.epic, spec), new Date()) : plain
+  const lead = spec.epic === null ? (spec.assignee ?? null) : leadNow(spec.epic, spec)
   return (
-    <ListItem key={`spec:${rowKey(row)}`} title={title} description={description} icon="file-text">
+    <ListItem key={`spec:${rowKey(row)}`} title={title} description={withAssignee(description, lead)} icon="file-text">
       <Actions row={row} isTaken={isTaken} />
     </ListItem>
   )
 }
 
-/** An idea or a task of an epic outside SDD: its stage, or when a session last changed it. */
+/** An idea or a task of an epic outside SDD: its stage, or when a session last changed it, and who leads it. */
 function ideaDescription(task: IdeaRow, isTaken: boolean): string {
   const state = isTaken ? updatedLine(updatedAt(task.id, task), new Date()) : taskState(task)
-  return task.kind === 'bug' ? `${BUG_LABEL} · ${state}` : state
+  return withAssignee(task.kind === 'bug' ? `${BUG_LABEL} · ${state}` : state, leadNow(task.id, task))
 }
 
 function ideaItem(row: IdeaRow | ProposalRow, takenNow: Set<number>) {
@@ -1323,7 +1369,7 @@ function outsideRows(epic: OutsideRow, takenNow: Set<number>) {
     <ListItem
       key={`outside:${epic.id}`}
       title={`${epic.id} · ${epic.title}`}
-      description={isTaken ? updatedLine(updatedAt(epic.id, epic), new Date()) : state.line}
+      description={withAssignee(isTaken ? updatedLine(updatedAt(epic.id, epic), new Date()) : state.line, leadNow(epic.id, epic))}
       icon="layers"
     />,
     ...epic.tasks.map((task) => (
@@ -1403,16 +1449,20 @@ function countOf(section: Section, list: SddList): number {
 /** Whether a section is shown unfolded: as the person left it, else as it opens at first. */
 const isOpen = (section: Section): boolean => !(read(collapsed)[section.key] ?? !section.open)
 
-/** Take over of a row, asked once more before the same start opens. */
+/**
+ * Take over of a row, asked once more before the same start opens; a row another person leads is
+ * asked by that person's name, and its yes lets the agent take the task over.
+ */
 function TakeOverBox({ then }: { then: Sheet }) {
+  const lead = otherLeadOf(then)
   // The key of a component's own root does not reach the tree: the callout is wrapped.
   return (
     <Stack gap="none">
-      <Callout key="take-over" tone="warning" title={TAKE_OVER_CONFIRM}>
+      <Callout key="take-over" tone="warning" title={lead === null ? TAKE_OVER_CONFIRM : takeOverQuestion(personName(lead))}>
         <Stack gap="xs">
           <Text size="xs">{TAKE_OVER_NOTE}</Text>
           <Row gap="xs">
-            <Button variant="solid" tone="accent" disabled={!canHand()} onPress={() => openSheet(then)}>
+            <Button variant="solid" tone="accent" disabled={!canHand()} onPress={() => openSheet(lead === null ? then : takenOver(then))}>
               Yes, take over
             </Button>
             <Button variant="ghost" onPress={() => setTakeOver(null)}>
@@ -1672,7 +1722,7 @@ function StartPart({ row, state, choice, taken }: { row: InWorkRow; state: EpicS
             <Stack gap="xs">
               <Text size="xs">{RESTART_NOTE}</Text>
               <Row gap="xs">
-                <Button variant="solid" tone="accent" disabled={blocked} onPress={start}>
+                <Button variant="solid" tone="accent" disabled={blocked} onPress={() => start()}>
                   Yes, start
                 </Button>
                 <Button variant="ghost" onPress={() => set(confirmAgain, false)}>
@@ -1688,17 +1738,19 @@ function StartPart({ row, state, choice, taken }: { row: InWorkRow; state: EpicS
   // Started, and the agent is not yet seen in its terminal: the button waits, and says for what.
   const waits = read(started) === epicKey(read(chosen) ?? '', epic)
   if (main === ACTION.takeOver && !waits) {
+    // Another person leads the epic: asked by name, and the yes lets the agent take it over.
+    const lead = otherLead(epic, row)
     return (
       <Stack gap="sm">
         <Button variant="solid" tone="accent" icon="play" disabled={blocked} onPress={() => set(confirmAgain, true)}>
           Take over
         </Button>
         {read(confirmAgain) ? (
-          <Callout key="confirm-take-over" tone="warning" title={TAKE_OVER_CONFIRM}>
+          <Callout key="confirm-take-over" tone="warning" title={lead === null ? TAKE_OVER_CONFIRM : takeOverQuestion(personName(lead))}>
             <Stack gap="xs">
               <Text size="xs">{TAKE_OVER_NOTE}</Text>
               <Row gap="xs">
-                <Button variant="solid" tone="accent" disabled={blocked} onPress={start}>
+                <Button variant="solid" tone="accent" disabled={blocked} onPress={() => start({ takeOver: lead !== null })}>
                   Yes, take over
                 </Button>
                 <Button variant="ghost" onPress={() => set(confirmAgain, false)}>
@@ -1716,7 +1768,7 @@ function StartPart({ row, state, choice, taken }: { row: InWorkRow; state: EpicS
   const note = waits ? STARTED_NOTE : earlier
   return (
     <Stack gap="sm">
-      <Button variant="solid" tone="accent" icon="play" disabled={blocked || waits} onPress={start}>
+      <Button variant="solid" tone="accent" icon="play" disabled={blocked || waits} onPress={() => start()}>
         Start
       </Button>
       {note === null ? null : (

@@ -625,16 +625,18 @@ export function createWorker(deps: WorkerDeps): {
 
     /**
      * Opens the agent of an idea in a terminal of the root with the task `conport prompt idea`
-     * prints; `command` is the agent's, when the launch has looked it up already.
+     * prints; `command` is the agent's, when the launch has looked it up already; `takeOver` when
+     * the person said yes to taking over an idea another person leads.
      */
     const startIdea = async (
       project: string,
       root: string,
       task: number,
       agent: string,
-      command?: string
+      command?: string,
+      takeOver?: boolean
     ): Promise<Result<{ terminal: string }>> => {
-      const order = await promptText(ideaPromptArgs({ task, project, agent, root }), root, { command: 'idea', task })
+      const order = await promptText(ideaPromptArgs({ task, project, agent, root, takeOver }), root, { command: 'idea', task })
       if (!order.ok) return order
       const title = `conport idea ${task}`
       const started = command === undefined ? await startAgent(root, agent, title, order.data) : await openAgent(root, command, title, order.data)
@@ -643,12 +645,12 @@ export function createWorker(deps: WorkerDeps): {
 
     // An idea: its agent works it through with the person in a terminal of the root. The CLI reads
     // the task afresh and refuses one that is no longer an idea.
-    orca.panels.handle('idea.start', async ({ project, root, task, agent }) => {
+    orca.panels.handle('idea.start', async ({ project, root, task, agent, takeOver }) => {
       const handle = byHandle(project)
       if (!handle.ok) return handle
       const cannot = cannotTakeTask(agent)
       if (cannot) return cannot
-      return startIdea(handle.data, root, task, agent)
+      return startIdea(handle.data, root, task, agent, undefined, takeOver === true)
     })
 
     // A proposal of the team: accepted first — the CLI finds or makes its idea and answers it —
@@ -677,7 +679,7 @@ export function createWorker(deps: WorkerDeps): {
     // A spec without a plan, as a document or as the epic that has it: its agent writes the plan with
     // the person in a terminal of the root and builds the epic. The epic is cut from the branch of
     // the main working copy, as `epic.start` cuts it.
-    orca.panels.handle('spec.start', async ({ project: named, root, target, agent }) => {
+    orca.panels.handle('spec.start', async ({ project: named, root, target, agent, takeOver }) => {
       const handle = byHandle(named)
       if (!handle.ok) return handle
       const project = handle.data
@@ -686,7 +688,7 @@ export function createWorker(deps: WorkerDeps): {
       const copies = await worktreesOf(root)
       if (!copies.ok) return copies
       const spec: SpecTarget = 'doc' in target ? { doc: target.doc } : { epic: target.epic }
-      const args = specPromptArgs({ target: spec, project, agent, root, base: copies.data.base })
+      const args = specPromptArgs({ target: spec, project, agent, root, base: copies.data.base, takeOver: takeOver === true })
       const order = await promptText(args, root, { command: 'spec', target: spec })
       if (!order.ok) return order
       const title = 'doc' in spec ? `conport spec doc-${spec.doc}` : `conport spec ${spec.epic}`
@@ -710,7 +712,7 @@ export function createWorker(deps: WorkerDeps): {
     // of the working copy of the branch `epic-<N>` and does the rest by the SDD skill. The start
     // reads the epic and the agent kinds, then asks `conport prompt` for the task, and runs nothing
     // else of ConPort: no check, no lock, no record of a run, no file in the working copy.
-    orca.panels.handle('epic.start', async ({ project, root, epic, harness, roles }) => {
+    orca.panels.handle('epic.start', async ({ project, root, epic, harness, roles, takeOver }) => {
       const list = await conport<EpicList>(['epic', 'list', '--project', project, '--json'], root)
       if (!list.ok) return list
       const found = list.data.epics.find((e) => e.id === epic)
@@ -751,7 +753,7 @@ export function createWorker(deps: WorkerDeps): {
         if (worktree === null) return fail('bad_output', 'orca created a working copy and did not name its path', 'Update Orca.')
       }
       // The CLI checks the epic again, now that the place of the work is known.
-      const args = epicPromptArgs({ epic, project: handle, harness, worktree, base: trees.data.base, roles })
+      const args = epicPromptArgs({ epic, project: handle, harness, worktree, base: trees.data.base, roles, takeOver: takeOver === true })
       const task = await promptText(args, root, { command: 'epic', epic, harness })
       if (!task.ok) return task
       const terminal = await terminalIn(worktree, `conport epic ${epic} · SDD`, commandLine([command.data, task.data]))

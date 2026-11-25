@@ -2,7 +2,7 @@
 // rows taken in another session, when the list is read again in full, and what each row offers.
 // Pure: no Node, no orca.
 import { handMode } from './cli'
-import type { IdeaRow, InWorkRow, OpenStatus, ProposalRow, SddList, SpecRow, TakenList } from './protocol'
+import type { Assignee, IdeaRow, InWorkRow, OpenStatus, ProposalRow, SddList, SpecRow, TakenList } from './protocol'
 
 /** How often the panel reads the rows in progress while it is visible: the light read. */
 export const POLL_TAKEN_MS = 60_000
@@ -97,6 +97,28 @@ export function needsFullRead(list: SddList, taken: TakenList): boolean {
   const now = new Set(taken.taken.map((row) => row.id))
   for (const id of now) if (!known.has(id)) return true
   return rows.some((row) => row.status === 'IN_PROGRESS' && !now.has(row.id))
+}
+
+/**
+ * The person who leads a row when that is someone else: null for a row of the caller's (its handle
+ * is `me`) or of nobody, and for every row while the caller is unknown (`me` null: the CLI could
+ * not name it) — as in the dashboard, nobody is another person then. A Take over of a row someone
+ * else leads is asked by name, and its yes lets the agent take the task over.
+ */
+export function ledByOther(assignee: Assignee | null | undefined, me: string | null | undefined): Assignee | null {
+  if (assignee === null || assignee === undefined) return null
+  if (me === null || me === undefined) return null
+  return assignee.handle === me ? null : assignee
+}
+
+/**
+ * Who leads root row `id` now: the light read when it names the row with the field — it is newer —
+ * else the list.
+ */
+export function leadOf(id: number, row: { assignee?: Assignee | null }, taken: TakenList | null): Assignee | null {
+  const named = taken?.taken.find((t) => t.id === id)
+  if (named !== undefined && 'assignee' in named) return named.assignee ?? null
+  return row.assignee ?? null
 }
 
 /** Show terminal when this host has the live terminal of the row, else Take over. */

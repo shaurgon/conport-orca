@@ -23,7 +23,7 @@ import {
 } from '../test/fixtures'
 import { fake, json, until } from '../test/fake'
 import * as panel from './panel'
-import type { IdeaRow, InWorkRow, Milestone, OrcaProject, Result, RowTarget, SddList, TakenList } from './protocol'
+import type { Assignee, IdeaRow, InWorkRow, Milestone, OrcaProject, Result, RowTarget, SddList, TakenList } from './protocol'
 import { FULL_READ_MS, POLL_TAKEN_MS } from './sdd'
 import * as text from './text'
 import { refusalText } from './text'
@@ -1248,6 +1248,8 @@ test('every refused action says the panel words: the cli by its code, the worker
     [{ code: 'http_502', message: 'ConPort answered 502: bad gateway', action: 'run the command again in a few minutes' }, 'ConPort answered with an error', 'Wait a few minutes and try again.'],
     [{ code: 'subagents_unavailable', message: 'claude plugin list did not answer', action: 'install Claude Code or make claude visible on the PATH, then run the command again' }, 'No answer from claude plugin list', "Install Claude Code or make claude visible on the Orca app's PATH, and try again."],
     [{ code: 'command_removed', message: 'conport epic run was removed in 0.7.0', action: 'start the epic from the ConPort Epics panel of Orca' }, 'The plugin called a command the CLI no longer has', 'Update the plugin.'],
+    // A task another person leads: one line, what is wrong and the one action.
+    [{ code: 'task_assigned_to_other', message: "Pick another task, or pass take_over=true only on your person's word", action: '' }, 'The task is led by another person', 'Pick another task, or take it over on your word.'],
     // A refusal of orca comes with no action: the panel names one.
     [{ code: 'terminal_not_found', message: 'no such terminal', action: '' }, 'Orca did not find the terminal', 'Press Refresh.'],
     // A refusal of orca the panel does not know: the words of orca as they are, and the one action of the panel.
@@ -1293,7 +1295,7 @@ test('every refusal of the commands left is said in the panel words with one act
   // The codes the commands the plugin still runs can refuse with.
   const codes = [
     'no_project', 'project_not_found', 'no_api_key', 'conport_unreachable', 'invalid_argument', 'subagents_unavailable',
-    'command_removed', 'runtime_unavailable', 'runtime_timeout', 'unexpected_answer', 'terminal_not_found'
+    'command_removed', 'runtime_unavailable', 'runtime_timeout', 'unexpected_answer', 'terminal_not_found', 'task_assigned_to_other'
   ]
   for (const code of codes) {
     const text = said(code)
@@ -1311,6 +1313,9 @@ test('every refusal of the commands left is said in the panel words with one act
   assert.deepEqual(bare('cli_failed', 'TypeError: boom'), unknown)
   assert.deepEqual(bare('refused', ''), unknown)
   assert.deepEqual(bare('refused', '  '), unknown)
+  assert.deepEqual(said('task_assigned_to_other'), text.REFUSED.assignedToOther)
+  assert.deepEqual(text.REFUSED.assignedToOther, { what: 'The task is led by another person', action: 'Pick another task, or take it over on your word.' })
+  assert.equal(text.oneLine(text.REFUSED.assignedToOther), 'The task is led by another person — pick another task, or take it over on your word.')
   assert.equal(said('http_401').what, 'ConPort did not accept the API key')
   assert.equal(said('http_403').what, 'ConPort did not accept the API key')
   assert.equal(said('http_500').what, 'ConPort answered with an error')
@@ -1483,6 +1488,173 @@ test('Take over asks Another session may be working on it first', async () => {
   assert.deepEqual(inputsOf(epicCalls.calls, 'epic.start'), [])
   await view.press({ text: 'Yes, take over' })
   assert.deepEqual((inputsOf(epicCalls.calls, 'epic.start') as Array<{ epic: number }>).map(({ epic }) => epic), [7])
+})
+
+const ANN: Assignee = { handle: 'usann2345a', email: 'ann@example.com', former_member: false }
+const ME = 'usme234567'
+
+/**
+ * SDD_LIST as `sdd list` answers it in a shared team, the caller `me`: idea 43, epic 7 and the epic
+ * of spec 22 in progress, each led by `lead` (null: by nobody).
+ */
+function ledList(lead: Assignee | null): SddList {
+  const list = copy(SDD_LIST)
+  list.me = ME
+  for (const idea of list.ideas) idea.assignee = idea.id === 43 ? lead : null
+  for (const epic of list.in_work) epic.assignee = epic.id === 7 ? lead : null
+  for (const spec of list.specs) {
+    if (spec.epic === 9) {
+      spec.status = 'IN_PROGRESS'
+      spec.assignee = lead
+    }
+  }
+  return list
+}
+
+/** The light read of ledList: the taken rows with the same lead. */
+const ledTaken = (lead: Assignee | null): TakenList => ({
+  project: HANDLE,
+  taken: [7, 9, 43].map((id) => ({ id, kind: id === 43 ? ('bug' as const) : ('epic' as const), updated_at: '2026-11-16T10:00:00Z', assignee: lead }))
+})
+
+test('rows show the assignee name', async () => {
+  const list = copy(SDD_LIST)
+  list.me = ME
+  const bob: Assignee = { handle: 'usbob2345b', email: null, former_member: false }
+  const at = <T extends { id: number }>(rows: T[], id: number): T => rows.find((row) => row.id === id) as T
+  at(list.ideas, 41).assignee = ANN
+  // A person without an email is named by the handle.
+  at(list.ideas, 43).assignee = bob
+  at(list.in_work, 7).assignee = ANN
+  const ofEpic = list.specs[1]
+  if (ofEpic) ofEpic.assignee = ANN
+  const outside = list.outside[0]
+  if (outside) {
+    outside.assignee = ANN
+    const task = outside.tasks[0]
+    if (task) task.assignee = ANN
+  }
+  const { host } = stub({ 'sdd.list': () => ok(list) })
+  view = await mount(panel, { host })
+  await fold(view, 'outside')
+  const line = (iso: string) => text.updatedLine(iso, new Date())
+  assert.equal(view.find({ testId: 'idea:41' })?.props.description, 'High · not started · ann@example.com')
+  assert.equal(view.find({ testId: 'idea:43' })?.props.description, `${text.BUG_LABEL} · ${line('2026-11-16T10:00:00Z')} · usbob2345b`)
+  assert.equal(view.find({ testId: 'epic:7' })?.props.description, `${line('2026-11-16T09:12:00Z')} · ann@example.com`)
+  assert.equal(view.find({ testId: 'spec:epic-9' })?.props.description, 'Epic with a spec, no plan · ann@example.com')
+  assert.equal(view.find({ testId: 'outside:50' })?.props.description, 'Not started · 1 task · ann@example.com')
+  assert.equal(view.find({ testId: 'task:51' })?.props.description, 'High · not started · ann@example.com')
+  // A row nobody leads says what it said.
+  assert.equal(view.find({ testId: 'idea:42' })?.props.description, 'In review')
+  assert.equal(view.find({ testId: 'epic:15' })?.props.description, 'Not started · 4 tasks')
+  // The light read is newer: the lead it names stands on the row. The first panel goes before the
+  // clock is caught, so its own timer is cleared for real.
+  await view.unmount()
+  view = undefined
+  const clock = clockAndTimer()
+  try {
+    const light = stub({ 'sdd.list': () => ok(list), 'sdd.taken': () => ok({ ...TAKEN, taken: TAKEN.taken.map((row) => ({ ...row, assignee: row.id === 43 ? ANN : null })) }) })
+    view = await mount(panel, { host: light.host })
+    clock.tick()
+    await settle(view)
+    assert.match(String(view.find({ testId: 'idea:43' })?.props.description), / · ann@example\.com$/)
+    assert.equal(String(view.find({ testId: 'epic:7' })?.props.description).includes('ann@example.com'), false)
+  } finally {
+    clock.restore()
+  }
+})
+
+test('a foreign taken row asks "<name> leads this task. Take it over?" and starts with --take-over on yes', async () => {
+  const clock = clockAndTimer()
+  try {
+    await foreignTakeOver(clock)
+  } finally {
+    clock.restore()
+  }
+})
+
+/** The body of the test above, under the clock of the panel it moves. */
+async function foreignTakeOver(clock: ReturnType<typeof clockAndTimer>): Promise<void> {
+  const { host, calls } = stub({ 'sdd.list': () => ok(ledList(ANN)), 'idea.start': () => ok({ terminal: 'term-1' }), 'spec.start': () => ok({ terminal: 'term-2' }) })
+  view = await mount(panel, { host })
+  await view.press({ testId: 'take-over:task-43' })
+  assert.equal(view.find({ testId: 'take-over' })?.props.title, 'ann@example.com leads this task. Take it over?')
+  assert.equal(view.find({ testId: 'sheet' }), null)
+  // Cancel starts nothing.
+  await view.press({ text: 'Cancel' })
+  assert.equal(view.find({ testId: 'take-over' }), null)
+  await view.press({ testId: 'take-over:task-43' })
+  await view.press({ text: 'Yes, take over' })
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Brainstorm “Check the backups”')
+  // The list read in full while the sheet is open keeps the sheet, and the yes with it.
+  const reads = inputsOf(calls, 'sdd.list').length
+  clock.tick(FULL_READ_MS)
+  await settle(view)
+  assert.equal(inputsOf(calls, 'sdd.list').length, reads + 1)
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Brainstorm “Check the backups”')
+  await view.press({ text: 'Open in terminal' })
+  assert.deepEqual(inputsOf(calls, 'idea.start'), [{ project: HANDLE, root: ROOT, task: 43, agent: 'claude', takeOver: true }])
+  // The epic of a spec, the same way.
+  await view.press({ testId: 'take-over:epic-9' })
+  assert.equal(view.find({ testId: 'take-over' })?.props.title, 'ann@example.com leads this task. Take it over?')
+  await view.press({ text: 'Yes, take over' })
+  await view.press({ text: 'Open in terminal' })
+  assert.deepEqual(inputsOf(calls, 'spec.start'), [{ project: HANDLE, root: ROOT, target: { epic: 9 }, agent: 'claude', takeOver: true }])
+  // Brainstorm of a row nobody took is no take over, whoever is named on another row.
+  await view.press({ testId: 'brainstorm:task-41' })
+  await view.press({ text: 'Open in terminal' })
+  assert.deepEqual(inputsOf(calls, 'idea.start')[1], { project: HANDLE, root: ROOT, task: 41, agent: 'claude' })
+  await view.unmount()
+  // An epic In work led by another person is asked the same from its screen.
+  const epic = stub({ 'sdd.list': () => ok(ledList(ANN)), 'epic.start': () => started() })
+  view = await mount(panel, { host: epic.host })
+  await view.press({ testId: 'epic:7' })
+  await view.press({ text: 'Take over' })
+  assert.equal(view.find({ testId: 'confirm-take-over' })?.props.title, 'ann@example.com leads this task. Take it over?')
+  assert.deepEqual(inputsOf(epic.calls, 'epic.start'), [])
+  await view.press({ text: 'Yes, take over' })
+  assert.deepEqual(
+    (inputsOf(epic.calls, 'epic.start') as Array<{ epic: number; takeOver?: boolean }>).map(({ epic: id, takeOver }) => ({ id, takeOver })),
+    [{ id: 7, takeOver: true }]
+  )
+}
+
+test('an own taken row keeps today\'s Take over', async () => {
+  // Led by the caller, and led by nobody: the question of today, and a start without the flag.
+  for (const lead of [{ ...ANN, handle: ME }, null]) {
+    const { host, calls } = stub({ 'sdd.list': () => ok(ledList(lead)), 'sdd.taken': () => ok(ledTaken(lead)), 'idea.start': () => ok({ terminal: 'term-1' }), 'epic.start': () => started() })
+    view = await mount(panel, { host })
+    await view.press({ testId: 'take-over:task-43' })
+    assert.equal(view.find({ testId: 'take-over' })?.props.title, text.TAKE_OVER_CONFIRM)
+    await view.press({ text: 'Yes, take over' })
+    await view.press({ text: 'Open in terminal' })
+    assert.deepEqual(inputsOf(calls, 'idea.start'), [{ project: HANDLE, root: ROOT, task: 43, agent: 'claude' }])
+    await view.press({ testId: 'epic:7' })
+    await view.press({ text: 'Take over' })
+    assert.equal(view.find({ testId: 'confirm-take-over' })?.props.title, text.TAKE_OVER_CONFIRM)
+    await view.press({ text: 'Yes, take over' })
+    assert.equal('takeOver' in (inputsOf(calls, 'epic.start')[0] as object), false)
+    await view.unmount()
+    view = undefined
+  }
+})
+
+test('a caller the CLI could not name makes no row foreign: today\'s Take over, no --take-over', async () => {
+  // The list names a lead, but not the caller (a 4xx on /me): as in the dashboard, nobody is another person.
+  const list = ledList(ANN)
+  list.me = null
+  const { host, calls } = stub({ 'sdd.list': () => ok(list), 'idea.start': () => ok({ terminal: 'term-1' }), 'epic.start': () => started() })
+  view = await mount(panel, { host })
+  await view.press({ testId: 'take-over:task-43' })
+  assert.equal(view.find({ testId: 'take-over' })?.props.title, text.TAKE_OVER_CONFIRM)
+  await view.press({ text: 'Yes, take over' })
+  await view.press({ text: 'Open in terminal' })
+  assert.deepEqual(inputsOf(calls, 'idea.start'), [{ project: HANDLE, root: ROOT, task: 43, agent: 'claude' }])
+  await view.press({ testId: 'epic:7' })
+  await view.press({ text: 'Take over' })
+  assert.equal(view.find({ testId: 'confirm-take-over' })?.props.title, text.TAKE_OVER_CONFIRM)
+  await view.press({ text: 'Yes, take over' })
+  assert.equal('takeOver' in (inputsOf(calls, 'epic.start')[0] as object), false)
 })
 
 test('Brainstorm of an idea calls idea.start, of a proposal proposal.start', async () => {

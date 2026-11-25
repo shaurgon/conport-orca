@@ -2427,6 +2427,33 @@ test('idea.start opens the agent in the root with the idea task and remembers it
   await m.worker.deactivate()
 })
 
+test('a start the person took over asks conport prompt with --take-over; any other start without it', async () => {
+  const m = await launchMachine()
+  await m.worker.request('idea.start', { project: HANDLE, root: m.f.root, task: 43, agent: 'codex', takeOver: true })
+  await m.worker.request('spec.start', { project: HANDLE, root: m.f.root, target: { epic: 9 }, agent: 'codex', takeOver: true })
+  await m.worker.request('idea.start', { project: HANDLE, root: m.f.root, task: 41, agent: 'codex' })
+  assert.deepEqual(
+    m.f.conportCalls().filter((call) => call[0] === 'prompt'),
+    [
+      ideaPromptArgs({ task: 43, project: HANDLE, agent: 'codex', root: m.f.root, takeOver: true }),
+      specPromptArgs({ target: { epic: 9 }, project: HANDLE, agent: 'codex', root: m.f.root, base: 'main', takeOver: true }),
+      ideaPromptArgs({ task: 41, project: HANDLE, agent: 'codex', root: m.f.root })
+    ]
+  )
+  assert.deepEqual(
+    m.f.conportCalls().filter((call) => call[0] === 'prompt').map((call) => call.includes('--take-over')),
+    [true, true, false]
+  )
+  await m.worker.deactivate()
+  // The lead session of an epic taken over is told the same way.
+  const machine = await startMachine()
+  const answer = await machine.worker.request('epic.start', { project: HANDLE, root: machine.f.root, epic: 7, harness: 'claude', roles: TYPES, takeOver: true })
+  assert.equal(answer.ok, true)
+  const asked = machine.f.conportCalls().filter((call) => call[0] === 'prompt')
+  assert.deepEqual(asked.map((call) => call.slice(-2)), [['--take-over', '--json']])
+  await machine.worker.deactivate()
+})
+
 test('proposal.start accepts the proposal first, then starts the idea it answers', async () => {
   const m = await launchMachine([{ match: 'proposal accept ', stdout: json({ task: 60 }) }])
   const answer = await m.worker.request('proposal.start', { project: HANDLE, root: m.f.root, doc: 301, agent: 'claude' })

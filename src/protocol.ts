@@ -89,11 +89,29 @@ export type EpicSummary = EpicList['epics'][number]
 export type OpenStatus = 'TODO' | 'IN_PROGRESS' | 'REVIEW' | 'BLOCKED'
 
 /**
+ * The person who leads a task, as `conport sdd list` names one: a handle, the email when the
+ * person has one, and whether the person has left the team.
+ */
+export interface Assignee {
+  handle: string
+  email: string | null
+  former_member: boolean
+}
+
+/**
+ * Who leads a row: null for nobody. Absent in a Private Team and from the answer of a CLI older
+ * than the field.
+ */
+interface Led {
+  assignee?: Assignee | null
+}
+
+/**
  * An idea — a root task with no spec — or an open task of an epic outside SDD, as
  * `conport sdd list` names it. `updated_at` comes with a task in progress: the time of its last
  * change, which a session that leads it renews.
  */
-export interface IdeaRow {
+export interface IdeaRow extends Led {
   id: number
   kind: 'task' | 'bug'
   title: string
@@ -106,7 +124,7 @@ export interface IdeaRow {
 }
 
 /** An open epic with its spec and its plan: the section In work. */
-export interface InWorkRow {
+export interface InWorkRow extends Led {
   id: number
   title: string
   status: EpicTaskStatus
@@ -128,7 +146,7 @@ export interface InWorkRow {
  * A spec without a plan: a document tagged `awaiting-plan` (`epic` null, `status` null), or an
  * epic with a spec and no plan (`epic` its number, `status` its status).
  */
-export interface SpecRow {
+export interface SpecRow extends Led {
   doc: number
   title: string
   /** The idea the spec clarifies; null when it clarifies none. */
@@ -148,7 +166,7 @@ export interface ProposalRow {
 }
 
 /** An open epic without a spec, with its open tasks: the section Outside SDD. */
-export interface OutsideRow {
+export interface OutsideRow extends Led {
   id: number
   title: string
   status: EpicTaskStatus
@@ -174,13 +192,15 @@ export interface SddList {
    * light read can name them. Absent from the answer of a CLI older than the field.
    */
   unlisted?: number[]
+  /** The caller's handle, null when the CLI could not name the caller; absent in a Private Team. */
+  me?: string | null
 }
 
 /** `conport sdd list --taken --json`: the root tasks in progress, read without documents or links. */
 export interface TakenList {
   /** The handle of the project. */
   project: string
-  taken: Array<{ id: number; kind: 'task' | 'bug' | 'epic'; updated_at: string }>
+  taken: Array<{ id: number; kind: 'task' | 'bug' | 'epic'; updated_at: string } & Led>
 }
 
 /**
@@ -202,6 +222,14 @@ export interface RowTarget {
   project: string
   root: string
   row: RowRef
+}
+
+/**
+ * A start the person said yes to on a row another person leads: the agent is told it may take the
+ * task over (`conport prompt … --take-over`). Absent on any other start.
+ */
+export interface TakeOver {
+  takeOver?: boolean
 }
 
 /** What an agent is handed a task for: to do it, to review the work done, or to fix what the review found. */
@@ -307,7 +335,7 @@ declare module 'orca' {
      * Opens a terminal in the repository root with the chosen agent, told to work the idea through
      * with the person. The agent and the terminal are remembered for the project and the idea.
      */
-    'idea.start': { input: { project: string; root: string; task: number; agent: string }; output: Result<{ terminal: string }> }
+    'idea.start': { input: { project: string; root: string; task: number; agent: string } & TakeOver; output: Result<{ terminal: string }> }
     /**
      * Accepts a proposal of the team — its idea is found or made — and starts that idea as
      * `idea.start` does. A refused accept opens nothing.
@@ -322,7 +350,7 @@ declare module 'orca' {
      * is the base of the epic. The agent and the terminal are remembered for the project and the row.
      */
     'spec.start': {
-      input: { project: string; root: string; target: { doc: number } | { epic: number }; agent: string }
+      input: { project: string; root: string; target: { doc: number } | { epic: number }; agent: string } & TakeOver
       output: Result<{ terminal: string }>
     }
     /** Declines a proposal of the team with the reason the person wrote; no agent is started. */
@@ -338,7 +366,7 @@ declare module 'orca' {
      * harness and the roles are remembered for the epic, with the terminal opened.
      */
     'epic.start': {
-      input: EpicRef & { harness: string; roles: Roles }
+      input: EpicRef & { harness: string; roles: Roles } & TakeOver
       output: Result<{ terminal: string; worktree: string }>
     }
     /**

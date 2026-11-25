@@ -2,9 +2,9 @@
 // is read in full, and the buttons of each row by the table of the panel.
 import { assert, test } from 'orca/testing'
 import { HANDLE, SDD_LIST, TAKEN } from '../test/fixtures'
-import type { IdeaRow, InWorkRow, SddList, SpecRow, TakenList } from './protocol'
-import { ACTION, FULL_READ_MS, ideaRows, needsFullRead, POLL_TAKEN_MS, rowActions, takenRows } from './sdd'
-import { SECTIONS, skippedLine, TAKE_OVER_CONFIRM, updatedLine } from './text'
+import type { Assignee, IdeaRow, InWorkRow, SddList, SpecRow, TakenList } from './protocol'
+import { ACTION, FULL_READ_MS, ideaRows, leadOf, ledByOther, needsFullRead, POLL_TAKEN_MS, rowActions, takenRows } from './sdd'
+import { personName, SECTIONS, skippedLine, TAKE_OVER_CONFIRM, takeOverQuestion, updatedLine, withAssignee } from './text'
 
 /** A fresh copy of the list, to change in one test. */
 const list = (): SddList => JSON.parse(JSON.stringify(SDD_LIST)) as SddList
@@ -173,6 +173,45 @@ test('row actions follow the table of the panel', () => {
     rowActions({ kind: 'epic', epic }, false, false)
   ].flat()
   assert.equal(all.some((label) => /Prepare|Write plan/.test(label)), false)
+})
+
+const ANN: Assignee = { handle: 'usann2345a', email: 'ann@example.com', former_member: false }
+const ME = 'usme234567'
+
+test('a row is own when it has no assignee or its handle is me, else another person leads it', () => {
+  assert.equal(ledByOther(null, ME), null)
+  assert.equal(ledByOther(undefined, ME), null)
+  assert.equal(ledByOther({ ...ANN, handle: ME }, ME), null)
+  assert.deepEqual(ledByOther(ANN, ME), ANN)
+  // A caller the CLI could not name: nobody is another person, as in the dashboard.
+  assert.equal(ledByOther(ANN, null), null)
+  assert.equal(ledByOther(ANN, undefined), null)
+})
+
+test('who leads a root row: the light read when it names the row with an assignee, else the list', () => {
+  const row = { assignee: ANN }
+  assert.deepEqual(leadOf(43, row, null), ANN)
+  // The light read is newer: it names another lead, or none.
+  const bob: Assignee = { handle: 'usbob2345b', email: null, former_member: false }
+  const read = (assignee?: Assignee | null): TakenList => ({
+    project: HANDLE,
+    taken: [{ id: 43, kind: 'task', updated_at: '2026-11-16T09:00:00Z', ...(assignee === undefined ? {} : { assignee }) }]
+  })
+  assert.deepEqual(leadOf(43, row, read(bob)), bob)
+  assert.equal(leadOf(43, row, read(null)), null)
+  // A light read without the field (a Private Team, an older CLI), or not naming the row: the list.
+  assert.deepEqual(leadOf(43, row, read()), ANN)
+  assert.deepEqual(leadOf(44, row, read(bob)), ANN)
+  assert.equal(leadOf(43, {}, null), null)
+})
+
+test('a person is named by the email, else by the handle; the question names who leads', () => {
+  assert.equal(personName(ANN), 'ann@example.com')
+  assert.equal(personName({ ...ANN, email: null }), 'usann2345a')
+  assert.equal(takeOverQuestion('ann@example.com'), 'ann@example.com leads this task. Take it over?')
+  assert.equal(withAssignee('In progress', ANN), 'In progress · ann@example.com')
+  assert.equal(withAssignee('In progress', null), 'In progress')
+  assert.equal(withAssignee('In progress', undefined), 'In progress')
 })
 
 test('updatedLine today and on another day', () => {

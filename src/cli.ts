@@ -1,8 +1,8 @@
 // The command lines of the conport CLI and how its answers read. No Node imports: pure.
-import type { HandMode, IdeaRow, Refusal, Result, Roles } from './protocol'
+import type { HandMode, IdeaRow, Refusal, Result, Roles, TakeOver } from './protocol'
 
 /** The conport CLI release the panel runs: kept equal to the CLI of the same repository. */
-export const CLI_VERSION = '0.15.3'
+export const CLI_VERSION = '0.16.0'
 
 /** How the CLI is started, as the person would type it. */
 export const CONPORT = ['npx', '-y', `conport@${CLI_VERSION}`]
@@ -43,11 +43,17 @@ export function sddTakenArgs(project: string): string[] {
 }
 
 /**
+ * The end of every `conport prompt` command line: `--take-over` when the person said yes to
+ * taking over a row another person leads, then `--json`, always last.
+ */
+const promptTail = (takeOver: boolean | undefined): string[] => (takeOver === true ? ['--take-over', '--json'] : ['--json'])
+
+/**
  * The arguments of `conport prompt idea`: the task of an agent that works an idea through with
  * the person, for this panel; `root` is where a small fix is made.
  */
-export function ideaPromptArgs(i: { task: number; project: string; agent: string; root: string }): string[] {
-  return ['prompt', 'idea', String(i.task), '-p', i.project, '--host', 'orca', '--agent', i.agent, '--root', i.root, '--json']
+export function ideaPromptArgs(i: { task: number; project: string; agent: string; root: string } & TakeOver): string[] {
+  return ['prompt', 'idea', String(i.task), '-p', i.project, '--host', 'orca', '--agent', i.agent, '--root', i.root, ...promptTail(i.takeOver)]
 }
 
 /**
@@ -61,9 +67,9 @@ export function specPromptArgs(i: {
   agent: string
   root: string
   base: string
-}): string[] {
+} & TakeOver): string[] {
   const target = 'doc' in i.target ? `doc-${i.target.doc}` : `task-${i.target.epic}`
-  return ['prompt', 'spec', target, '-p', i.project, '--host', 'orca', '--agent', i.agent, '--root', i.root, '--base', i.base, '--json']
+  return ['prompt', 'spec', target, '-p', i.project, '--host', 'orca', '--agent', i.agent, '--root', i.root, '--base', i.base, ...promptTail(i.takeOver)]
 }
 
 /** The arguments of `conport proposal accept`: the idea a proposal of the team becomes. */
@@ -77,7 +83,7 @@ export function proposalDeclineArgs(i: { doc: number; project: string; reason: s
 }
 
 /** An epic, done by the SDD skill: in the working copy of the branch `epic-<N>`, by these subagent types. */
-export interface EpicSddPrompt {
+export interface EpicSddPrompt extends TakeOver {
   epic: number
   /** The project, as the CLI takes any address of one. */
   project: string
@@ -98,12 +104,12 @@ export function epicPromptArgs(i: EpicSddPrompt): string[] {
     i.harness === 'claude'
       ? ['--implementer', i.roles.implementer, '--reviewer', i.roles.reviewer, '--gap-hunter', i.roles.gapHunter, '--final-reviewer', i.roles.finalReviewer]
       : []
-  return ['prompt', 'epic', String(i.epic), '-p', i.project, '--harness', i.harness, '--worktree', i.worktree, '--base', i.base, ...types, '--json']
+  return ['prompt', 'epic', String(i.epic), '-p', i.project, '--harness', i.harness, '--worktree', i.worktree, '--base', i.base, ...types, ...promptTail(i.takeOver)]
 }
 
 /** The arguments of `conport prompt task`: the task of an agent that does, reviews or fixes a task outside the epics. */
-export function taskPromptArgs(i: { task: number; project: string; mode: HandMode; agent: string; root: string }): string[] {
-  return ['prompt', 'task', String(i.task), '-p', i.project, '--host', 'orca', '--mode', i.mode, '--agent', i.agent, '--root', i.root, '--json']
+export function taskPromptArgs(i: { task: number; project: string; mode: HandMode; agent: string; root: string } & TakeOver): string[] {
+  return ['prompt', 'task', String(i.task), '-p', i.project, '--host', 'orca', '--mode', i.mode, '--agent', i.agent, '--root', i.root, ...promptTail(i.takeOver)]
 }
 
 /** The subagent type each role of an epic starts with: the types of the conport plugin. */

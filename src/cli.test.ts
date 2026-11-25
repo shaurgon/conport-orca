@@ -131,6 +131,23 @@ test('a spec is asked by its document or by its epic, with the root and the base
   ])
 })
 
+test('takeOver adds --take-over to each prompt', () => {
+  const at = { project: HANDLE, agent: 'claude', root: '/work/app' }
+  const built = (takeOver?: boolean): string[][] => [
+    epicPromptArgs({ epic: 7, project: HANDLE, harness: 'claude', worktree: '/work/app-epic-7', base: 'main', roles: DEFAULT_ROLES, takeOver }),
+    ideaPromptArgs({ ...at, task: 41, takeOver }),
+    specPromptArgs({ ...at, target: { epic: 9 }, base: 'main', takeOver }),
+    taskPromptArgs({ ...at, task: 41, mode: 'do', takeOver })
+  ]
+  // The person's yes reaches the CLI as the one flag, right before --json, which stays last.
+  for (const args of built(true)) {
+    assert.deepEqual(args.slice(-2), ['--take-over', '--json'], args.join(' '))
+    assert.equal(args.filter((a) => a === '--take-over').length, 1, args.join(' '))
+  }
+  // Without the yes, no flag: an own row starts as it did.
+  for (const args of [...built(false), ...built()]) assert.equal(args.includes('--take-over'), false, args.join(' '))
+})
+
 test('a proposal is accepted and declined by its document', () => {
   assert.deepEqual(proposalAcceptArgs({ doc: 301, project: HANDLE }), ['proposal', 'accept', doc(301), '-p', HANDLE, '--json'])
   assert.deepEqual(proposalDeclineArgs({ doc: 301, project: HANDLE, reason: 'Out of scope for this year' }), [

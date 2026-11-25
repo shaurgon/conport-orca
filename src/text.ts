@@ -1,6 +1,6 @@
 // What the panel says. Shared by the worker and the panel: no Node imports.
 import { FIXER_TYPE } from './cli'
-import type { EpicTask, EpicTaskStatus, HandMode, IdeaRow, InWorkRow, Milestone, Roles, RowRef } from './protocol'
+import type { Assignee, EpicTask, EpicTaskStatus, HandMode, IdeaRow, InWorkRow, Milestone, Roles, RowRef } from './protocol'
 
 /** The word for `n` things: `one` for exactly 1, `many` for any other number. */
 export function plural(n: number, one: string, many: string): string {
@@ -81,6 +81,16 @@ export function updatedLine(iso: string, now: Date): string {
 
 /** What Take over asks before it starts the task of a row another session may hold. */
 export const TAKE_OVER_CONFIRM = 'Another session may be working on it'
+
+/** A person as the panel names one: by the email, else by the handle — a handle alone names no colleague. */
+export const personName = (person: Assignee): string => person.email || person.handle
+
+/** What Take over asks of a row another person leads; a yes lets the agent take it over. */
+export const takeOverQuestion = (name: string): string => `${name} leads this task. Take it over?`
+
+/** The line of a row with the person who leads it, when someone does. */
+export const withAssignee = (line: string, assignee: Assignee | null | undefined): string =>
+  assignee ? `${line} · ${personName(assignee)}` : line
 
 /** Under the question of Take over: what the start does. */
 export const TAKE_OVER_NOTE = 'A new agent starts with the same task and goes on by the journal of the task and its links.'
@@ -332,6 +342,8 @@ export const REFUSED = {
   proposalClosed: (doc: number): FailureText => ({ what: `Proposal doc-${doc} is no longer open: it was accepted or declined`, action: REFRESH }),
   proposalAccepted: (doc: number): FailureText => ({ what: `Proposal doc-${doc} already has its idea, and the idea is taken up`, action: REFRESH }),
   reasonMissing: { what: 'No reason is given', action: 'Write why the proposal is declined.' },
+  /** A take of a task another person leads, refused by ConPort. */
+  assignedToOther: { what: 'The task is led by another person', action: 'Pick another task, or take it over on your word.' },
   /** A row whose terminal this host does not have alive. */
   sessionGone: (row: RowRef): FailureText => {
     const name = { idea: 'Task', task: 'Task', epic: 'Epic', spec: 'Spec doc-' }[row.kind]
@@ -450,7 +462,8 @@ const FAILURES: Record<string, FailureText> = {
   runtime_unavailable: ORCA_AWAY,
   runtime_timeout: ORCA_AWAY,
   unexpected_answer: { what: 'Orca answered in a way the plugin does not expect', action: 'Update Orca and try again.' },
-  terminal_not_found: { what: 'Orca did not find the terminal', action: REFRESH }
+  terminal_not_found: { what: 'Orca did not find the terminal', action: REFRESH },
+  task_assigned_to_other: REFUSED.assignedToOther
 }
 
 /** The text of a known code; undefined for a code not known. */
