@@ -137,9 +137,11 @@ Before installing, make sure of six things:
 
 Then, in Orca:
 
-1. Open Settings → Plugins, choose **From a Git URL…** in the add menu and enter the repository
-   `https://github.com/shaurgon/conport-orca` (or `shaurgon/conport-orca`). Orca installs its
-   latest version tag.
+1. Open Settings → Plugins and find **ConPort SDD** in Orca's community catalog, or open its page
+   [in the plugin directory](https://orca.dev/plugins/shaurgon.conport-orca?catalog=community),
+   which opens it in Orca. Without the community catalog, choose **From a Git URL…** in the add
+   menu and enter the repository `https://github.com/shaurgon/conport-orca` (or
+   `shaurgon/conport-orca`); Orca installs its latest version tag.
 2. Review what the plugin asks for (see [What the plugin may do](#what-the-plugin-may-do)) and
    choose **Install & enable**.
 3. Open the **ConPort SDD** panel in the right sidebar and pick the ConPort project if the
@@ -195,6 +197,13 @@ orca plugin check . --json    # renders each scenario of src/panel.check.ts
 orca plugin shot . --scenario epic-session-alive --json   # needs Orca's window hidden or minimized
 ```
 
+The icon, the cover and the screenshot of the catalog listing are `images/icon.png`,
+`images/cover.png` and `images/screenshot.png`, named in the manifest.
+
 Type checking: `test` and `check` only transpile the code. `npm ci` installs TypeScript and the Node typings, and
 `npm run typecheck` writes the Orca typings to `.orca/types/` (`orca plugin types .`) and runs
 `tsc -p .`; keep it clean.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

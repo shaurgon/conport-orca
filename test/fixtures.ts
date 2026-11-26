@@ -114,7 +114,7 @@ export const SDD_LIST: SddList = {
     { id: 42, kind: 'task', title: 'Compare the metrics after the release', status: 'REVIEW', priority: 3, changes_requested: false },
     { id: 47, kind: 'task', title: 'Read the old exports', status: 'BLOCKED', priority: 4, changes_requested: false }
   ],
-  proposals: [{ doc: 301, title: 'Предложение: Search in the archive', author: 'Anna' }],
+  proposals: [{ doc: 301, title: 'Proposal: Search in the archive', author: 'Anna' }],
   skipped_proposals: [{ doc: 302, reason: 'no state line' }],
   outside: [
     {

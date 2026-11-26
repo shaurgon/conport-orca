@@ -1706,7 +1706,7 @@ function StartPart({ row, state, choice, taken }: { row: InWorkRow; state: EpicS
   if (main === ACTION.showTerminal) {
     return (
       <Stack gap="sm">
-        <Callout key="session-alive" tone="accent" icon="terminal">
+        <Callout key="session-alive" tone="accent" icon="terminal" title="Agent at work">
           {inherited ? inheritedNotice(epic) : state.worktree === null ? rootSessionNotice(epic) : startNotice(epic)}
         </Callout>
         <Row gap="xs" wrap>
@@ -1895,7 +1895,7 @@ export default function Panel() {
       <Header />
       {failed ? <RefusalBox error={failed} /> : null}
       {message ? (
-        <Callout key="notice" tone="accent" icon="terminal">
+        <Callout key="notice" tone="accent" icon="terminal" title="Done">
           {message}
         </Callout>
       ) : null}

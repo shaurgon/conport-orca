@@ -641,8 +641,15 @@ const typesOf = (v: TestPanel): unknown[] => ROLE_LABELS.map((label) => v.find({
 const listsOff = (v: TestPanel): boolean[] => ROLE_LABELS.map((label) => v.find({ label })?.props.disabled === true)
 const startOf = (v: TestPanel) => v.find({ text: 'Start' })
 /** The notice over the panel, and the line of the epic screen that says where the live agent is. */
-const noticeOf = (v: TestPanel): string | null => v.find({ testId: 'notice' })?.text ?? null
-const aliveOf = (v: TestPanel): string | null => v.find({ testId: 'session-alive' })?.text ?? null
+/** The message of a Callout: its text after the title the kit reads first. */
+function messageOf(v: TestPanel, testId: string): string | null {
+  const box = v.find({ testId })
+  if (!box) return null
+  const title = String(box.props.title ?? '')
+  return title && box.text.startsWith(`${title} `) ? box.text.slice(title.length + 1) : box.text
+}
+const noticeOf = (v: TestPanel): string | null => messageOf(v, 'notice')
+const aliveOf = (v: TestPanel): string | null => messageOf(v, 'session-alive')
 /** No request of the panel asked for a run. */
 const noRun = (calls: Array<{ name: string }>): boolean => !calls.some((c) => c.name.startsWith('run.'))
 
@@ -976,6 +983,7 @@ test('start sends the harness and the roles, no way, and says where the agent is
     }
   ])
   assert.equal(noticeOf(view), 'The agent of epic 15 is open in the terminal of working copy epic-15; it asks its questions there')
+  assert.equal(view.find({ testId: 'notice' })?.props.title, 'Done')
   doesNotMatch(textOf(view), /Agents are starting|the reason will be there/)
   // The screen read the session and the tasks again, and the types of the harness not again.
   assert.deepEqual(['epic.session', 'epic.tasks', 'subagents.get'].map((name) => inputsOf(calls, name).length), [2, 2, 1])
@@ -1043,6 +1051,7 @@ test('a live session offers its terminal and a second start only after a yes', a
   assert.equal(startOf(view), null)
   assert.ok(view.find({ text: 'Show terminal' }))
   assert.equal(aliveOf(view), 'The agent of epic 7 is open in the terminal of working copy epic-7; it asks its questions there')
+  assert.equal(view.find({ testId: 'session-alive' })?.props.title, 'Agent at work')
   await view.press({ text: 'Start again' })
   assert.deepEqual(inputsOf(calls, 'epic.start'), [])
   assert.equal(view.find({ testId: 'confirm-again' })?.props.title, 'Start epic 7 again?')
@@ -1363,7 +1372,7 @@ test('four sections in order with counts and captions, Outside SDD folded', asyn
   // Ideas by priority, the proposal after the tasks of priority 3; the bug marked.
   assert.deepEqual(
     itemsIn(view, 'Ideas').map(([title]) => title),
-    ['41 · Rotate the backup key', '42 · Compare the metrics after the release', '43 · Check the backups', '46 · Simplify the search answer', `doc-${301} · Предложение: Search in the archive`, '47 · Read the old exports']
+    ['41 · Rotate the backup key', '42 · Compare the metrics after the release', '43 · Check the backups', '46 · Simplify the search answer', `doc-${301} · Proposal: Search in the archive`, '47 · Read the old exports']
   )
   await fold(view, 'outside')
   assert.deepEqual(itemsIn(view, 'Outside SDD: No milestone'), [
@@ -1689,7 +1698,7 @@ test('Brainstorm of an idea calls idea.start, of a proposal proposal.start', asy
   assert.equal(inputsOf(calls, 'sdd.list').length, before + 1)
   // A proposal: accepted and brainstormed by the worker; the notice names the idea it became.
   await view.press({ testId: `brainstorm:doc-${301}` })
-  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Brainstorm “Предложение: Search in the archive”')
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Brainstorm “Proposal: Search in the archive”')
   assert.match(textOf(view), /Takes the proposal into design: finds or files its idea/)
   await view.press({ text: 'Open in terminal' })
   assert.deepEqual(inputsOf(calls, 'proposal.start'), [{ project: HANDLE, root: ROOT, doc: 301, agent: 'claude' }])
@@ -1716,7 +1725,7 @@ test('Decline sends nothing without a reason', async () => {
   const { host, calls } = stub({ 'proposal.decline': () => ok(null) })
   view = await mount(panel, { host })
   await view.press({ testId: `decline:doc-${301}` })
-  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Decline “Предложение: Search in the archive”')
+  assert.equal(view.find({ testId: 'sheet' })?.props.title, 'Decline “Proposal: Search in the archive”')
   const decline = () => view?.findAll({ type: 'Button' }).find((b) => b.text === 'Decline' && b.path.startsWith(`${view?.find({ testId: 'sheet' })?.path}/`))
   // No agent is offered: no agent is started.
   assert.equal(view.find({ type: 'RadioGroup' }), null)
@@ -1729,7 +1738,7 @@ test('Decline sends nothing without a reason', async () => {
   await view.press(decline() as never)
   assert.deepEqual(inputsOf(calls, 'proposal.decline'), [{ project: HANDLE, root: ROOT, doc: 301, reason: 'Out of scope for this year' }])
   assert.equal(view.find({ testId: 'sheet' }), null)
-  assert.equal(view.find({ testId: 'notice' })?.text, `Proposal doc-${301} is declined with your reason.`)
+  assert.equal(noticeOf(view), `Proposal doc-${301} is declined with your reason.`)
   assert.deepEqual(inputsOf(calls, 'idea.start'), [])
 })
 
@@ -1936,7 +1945,7 @@ test('an epic In work started from its spec on this host shows the terminal it i
   await view.press({ testId: 'epic:7' })
   // Its own session is not seen; the one of its spec is alive: Show terminal and Start again.
   assert.equal(view.find({ text: 'Take over' }), null)
-  assert.equal(view.find({ testId: 'session-alive' })?.text, text.inheritedNotice(7))
+  assert.equal(aliveOf(view), text.inheritedNotice(7))
   await view.press({ text: 'Show terminal' })
   const shown = { project: HANDLE, root: ROOT, row: { kind: 'epic', id: 7, spec: 18, idea: null } }
   assert.deepEqual(inputsOf(calls, 'terminal.show'), [shown])
