@@ -45,10 +45,8 @@ export interface Fake {
   conportCalls(): string[][]
   orcaCalls(): string[][]
   gitCalls(): string[][]
-  /** The user env file of the fake machine (`~/.config/conport/.env`); none until a test writes it. */
-  userEnv: string
   /** How the worker of this machine starts its programs, for a worker with one of them changed. */
-  deps: { conport: readonly string[]; orca: readonly string[]; git: readonly string[]; userEnv: string }
+  deps: { conport: readonly string[]; orca: readonly string[]; git: readonly string[] }
 }
 
 /**
@@ -162,8 +160,7 @@ export function fake(conport: FakeAnswer[], orca?: Answers, git?: Answers): Fake
       FAKE_CLI,
       scenario('orca', [...answersOf(orca), ...orcaRepo(root, focused, pluginRepo)])
     ],
-    git: [process.execPath, FAKE_CLI, scenario('git', answersOf(git))],
-    userEnv: join(dir, 'conport.env')
+    git: [process.execPath, FAKE_CLI, scenario('git', answersOf(git))]
   }
   const { activate, deactivate } = createWorker(deps)
   const workspaces = [
@@ -192,7 +189,6 @@ export function fake(conport: FakeAnswer[], orca?: Answers, git?: Answers): Fake
     conportCalls: () => calls('conport'),
     orcaCalls: () => calls('orca'),
     gitCalls: () => calls('git'),
-    userEnv: deps.userEnv,
     deps
   }
 }

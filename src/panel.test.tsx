@@ -307,7 +307,7 @@ test('the bind card of a submodule says its settings files are not read', async 
 test('settings lines are shown with the project', async () => {
   const LINES = [
     'units is read from .conport.json only',
-    'CONPORT_PROJECT_NAME in ~/.config/conport/.env is not read: it would apply to every repository — remove it'
+    '.conport.local.json is not ignored by git: add it to .gitignore'
   ]
   const { host, calls } = stub({ 'projects.list': () => ok([{ ...SHOP, source: 'file', lines: LINES }]) })
   view = await mount(panel, { host })
@@ -1195,7 +1195,7 @@ test('a missing api key shows the cli refusal in the panel', async () => {
   const box = view.findAll({ type: 'Callout' }).find((c) => c.props.tone === 'danger')
   // Said in the panel's words by the code of the refusal, with its one action; the CLI's English never shows.
   assert.equal(box?.props.title, 'No ConPort API key')
-  assert.ok(box?.text.includes('Add CONPORT_API_KEY to ~/.config/conport/.env and try again.'), box?.text)
+  assert.ok(box?.text.includes('Add the ConPort API key to ~/.config/conport/conport.key and try again.'), box?.text)
   assert.match(JSON.stringify(box), /no_api_key/)
   doesNotMatch(textOf(view), /is not set|put CONPORT_API_KEY/)
 })

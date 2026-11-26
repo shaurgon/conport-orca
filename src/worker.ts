@@ -3,7 +3,6 @@
 // running between requests. No status bar item, no notification — the state of the agents is
 // Orca's own.
 import { readFile, realpath } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { basename, join, resolve as resolvePath, sep } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 import {
@@ -54,8 +53,6 @@ export interface WorkerDeps {
   conport: readonly string[]
   orca: readonly string[]
   git: readonly string[]
-  /** The user env file of the conport CLI; by default `<XDG_CONFIG_HOME | ~/.config>/conport/.env`. */
-  userEnv?: string
   /** How long git may take to say anything about the settings; by default GIT_TIMEOUT_MS. */
   gitTimeoutMs?: number
 }
@@ -108,12 +105,6 @@ const DASHBOARD = 'https://me.conport.app'
 
 /** How long git may take to say anything about the settings files, as every reader of them waits. */
 export const GIT_TIMEOUT_MS = 5000
-
-/** The user env file of the conport CLI: `<XDG_CONFIG_HOME | <home>/.config>/conport/.env`. */
-export function userEnvFile(env: Record<string, string | undefined>, home: string): string {
-  const config = env.XDG_CONFIG_HOME?.trim() || join(home, '.config')
-  return join(config, 'conport', '.env')
-}
 
 /** The text of a file, null when there is none, its error code when it is there but cannot be read. */
 async function readText(file: string): Promise<SettingsText> {
@@ -321,9 +312,8 @@ export function createWorker(deps: WorkerDeps): {
      */
     const settingsOf = async (root: string): Promise<{ settings: ReturnType<typeof readSettings>; readsFiles: boolean }> => {
       await guardRoot(root)
-      const [repository, userText] = await Promise.all([repositoryKind(root), readText(deps.userEnv ?? userEnvFile(process.env, homedir()))])
-      const userEnv = typeof userText === 'string' ? userText : null
-      const nothing = { shared: null, local: null, localIgnored: null, env: {}, explicit: null, userEnv }
+      const repository = await repositoryKind(root)
+      const nothing = { shared: null, local: null, localIgnored: null, env: {}, explicit: null }
       if (repository.kind === 'failed') {
         const settings = readSettings(nothing)
         return { settings: { ...settings, lines: [repository.line, ...settings.lines], blocked: true }, readsFiles: false }

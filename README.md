@@ -118,10 +118,11 @@ Before installing, make sure of six things:
   `conport` CLI through `npx` on first use.
 - **The main working tree of the repository on a branch:** the branch of an epic is cut from the
   branch checked out in the main working tree, with the commits you have not pushed.
-- **A ConPort API key** in `~/.config/conport/.env` (or `$XDG_CONFIG_HOME/conport/.env`):
+- **A ConPort API key** in `~/.config/conport/conport.key` (or `$XDG_CONFIG_HOME/conport/conport.key`),
+  the key alone on one line:
 
   ```sh
-  CONPORT_API_KEY=cport_live_...
+  cport_live_...
   ```
 
   The CLI reads this file itself, so the key never passes through the plugin or Orca.

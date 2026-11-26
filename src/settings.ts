@@ -19,8 +19,16 @@ const TYPE_WORDS = {
   arch: 'an object',
   'arch.ignore': 'a list of path patterns or {"path", "reason"} objects',
   'arch.git': 'true or false',
-  units: 'a list'
+  units: 'a list',
+  root: 'a root name: lower-case letters, digits and -, up to 32 characters, not none',
+  roots: 'an object of root names and paths'
 } as const
+
+/**
+ * The name of a root of the project: lower-case letters, digits and -, up to 32 characters, not
+ * `none` (which names "no root" where a root is asked for).
+ */
+const ROOT_NAME = /^(?!none$)[a-z0-9][a-z0-9-]{0,31}$/
 
 type SettingsKey = keyof typeof TYPE_WORDS
 
@@ -38,8 +46,6 @@ export interface SettingsInput {
   env: Record<string, string | undefined>
   /** A project named by the caller, which no file overrides. */
   explicit: string | null
-  /** The text of `~/.config/conport/.env`, null when there is none. */
-  userEnv: string | null
 }
 
 /** An element of `arch.ignore`: a path pattern, or one with the reason it is ignored. */
@@ -49,6 +55,10 @@ export interface Settings {
   plugins: { superpowers?: boolean; codegraph?: boolean }
   arch: { ignore?: IgnoreEntry[]; git?: boolean }
   units?: unknown[]
+  /** The root of the project this repository is: set by `.conport.json` only. */
+  root?: string
+  /** The paths of the other roots on this machine, as written: set by `.conport.local.json` only. */
+  roots?: Record<string, string>
 }
 
 export interface SettingsResult {
@@ -297,10 +307,32 @@ function isIgnoreEntry(e: unknown): boolean {
   return Object.keys(e).length === 2 && isPattern(e.path) && typeof e.reason === 'string'
 }
 
+const isRootName = (v: unknown): v is string => typeof v === 'string' && ROOT_NAME.test(v)
+
+/**
+ * The paths of the other roots, as written: an object of root names and non-blank strings, or
+ * null when one entry is not — the whole key is dropped.
+ */
+function readRoots(v: unknown): Record<string, string> | null {
+  if (!isObject(v)) return null
+  const roots: Record<string, string> = {}
+  for (const [name, p] of Object.entries(v)) {
+    if (!isRootName(name) || typeof p !== 'string' || !p.trim()) return null
+    roots[name] = p
+  }
+  return roots
+}
+
 interface FileVerdict {
   readError: string | null
   lines: string[]
-  values: { plugins?: Settings['plugins']; arch?: Settings['arch']; units?: unknown[] }
+  values: {
+    plugins?: Settings['plugins']
+    arch?: Settings['arch']
+    units?: unknown[]
+    root?: string
+    roots?: Record<string, string>
+  }
   /** The file is there but cannot name a project, so no project is named at all. */
   blocks: boolean
   name: string | null
@@ -334,7 +366,7 @@ function readFile(file: string, input: SettingsText | undefined, isLocal: boolea
   const data = scrub(parsed, found) as JsonObject
   if (found.any) {
     out.lines.push(
-      `${file} holds an API key: revoke it at https://me.conport.app/dashboard/connect, create a new one and keep it in ~/.config/conport/.env`
+      `${file} holds an API key: revoke it at https://me.conport.app/dashboard/connect, create a new one and keep it in ~/.config/conport/conport.key`
     )
   }
   if (nameIsKey) out.blocks = true
@@ -396,18 +428,23 @@ function readFile(file: string, input: SettingsText | undefined, isLocal: boolea
       if (Array.isArray(data.units)) out.values.units = data.units
       else wrong('units')
     }
+    if (has(data, 'root')) {
+      if (isRootName(data.root)) out.values.root = data.root
+      else wrong('root')
+    }
+    if (has(data, 'roots')) out.lines.push(`roots is read from ${LOCAL_SETTINGS_FILE} only`)
   } else {
     for (const k of ['arch', 'units']) {
       if (has(data, k)) out.lines.push(`${k} is read from .conport.json only`)
     }
+    if (has(data, 'root')) out.lines.push(`remove root from ${LOCAL_SETTINGS_FILE} — the root is set by ${SETTINGS_FILE}`)
+    if (has(data, 'roots')) {
+      const roots = readRoots(data.roots)
+      if (roots) out.values.roots = roots
+      else wrong('roots')
+    }
   }
   return out
-}
-
-/** Whether the text of ~/.config/conport/.env assigns CONPORT_PROJECT_NAME. */
-function userEnvNamesProject(text: string | null | undefined): boolean {
-  if (typeof text !== 'string') return false
-  return text.split(/\r?\n/).some((l) => /^\s*(export\s+)?CONPORT_PROJECT_NAME\s*=/.test(l))
 }
 
 function envName(env: SettingsInput['env'] | undefined): string | null {
@@ -434,6 +471,8 @@ export function readSettings(input: SettingsInput): SettingsResult & { blocked: 
     arch: { ...(shared.values.arch ?? {}) }
   }
   if (shared.values.units) settings.units = shared.values.units
+  if (shared.values.root !== undefined) settings.root = shared.values.root
+  if (local.values.roots) settings.roots = local.values.roots
 
   let project: string | null = null
   let source: string | null = null
@@ -468,9 +507,6 @@ export function readSettings(input: SettingsInput): SettingsResult & { blocked: 
       source = 'CONPORT_PROJECT_NAME'
     }
   }
-  if (userEnvNamesProject(input.userEnv)) {
-    lines.push('CONPORT_PROJECT_NAME in ~/.config/conport/.env is not read: it would apply to every repository — remove it')
-  }
   return { project, source, settings, lines, blocked }
 }
 
@@ -479,7 +515,7 @@ export function readSettings(input: SettingsInput): SettingsResult & { blocked: 
  * The project comes from the explicit argument, then from project_name of the merged files (the
  * personal file over the shared one), then from CONPORT_PROJECT_NAME when no file names one. A
  * file that is there but broken names no project, and neither the other file nor the variable
- * stands in for it. ~/.config/conport/.env never names it.
+ * stands in for it.
  */
 export function resolveSettings(input: SettingsInput): SettingsResult {
   const { blocked: _blocked, ...result } = readSettings(input)

@@ -270,30 +270,38 @@ test('the stored binding is read last', async () => {
 })
 
 test('settings lines reach the context', async () => {
-  // A personal file git does not ignore, and the variable in the user env file.
+  // A personal file git does not ignore. The variable in the user config folder is read by no
+  // one: it gives neither a project nor a line.
+  const config = mkdtempSync(join(tmpdir(), 'conport-orca-xdg-'))
+  mkdirSync(join(config, 'conport'))
+  writeFileSync(join(config, 'conport', '.env'), 'CONPORT_API_KEY=x\nCONPORT_PROJECT_NAME=everywhere\n')
+  const saved = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = config
   const exposed = fake([], [], ({ root }) => [
     { match: `-C ${root} ls-files --error-unmatch -- .conport.local.json`, code: 1 },
     { match: `-C ${root} check-ignore -q -- .conport.local.json`, code: 1 }
   ])
   writeFileSync(join(exposed.root, '.conport.json'), JSON.stringify({ project_name: 'shop-api' }))
   writeFileSync(join(exposed.root, '.conport.local.json'), JSON.stringify({ plugins: { superpowers: true }, units: [] }))
-  writeFileSync(exposed.userEnv, 'CONPORT_API_KEY=x\nCONPORT_PROJECT_NAME=everywhere\n')
-  let worker = await mountWorker(exposed.worker, { host: exposed.host() })
-  assert.deepEqual(await contextOfRepo(worker), [
-    {
-      project: 'shop-api',
-      source: 'file',
-      lines: [
-        'units is read from .conport.json only',
-        '.conport.local.json is not ignored by git: add it to .gitignore',
-        'CONPORT_PROJECT_NAME in ~/.config/conport/.env is not read: it would apply to every repository — remove it'
-      ]
-    }
-  ])
-  // The answers of the binding carry the lines too.
-  const set = await worker.request('project.set', { root: exposed.root, project: 'other' })
-  assert.deepEqual(set.ok ? set.data.lines.length : set, 3)
-  await worker.deactivate()
+  let worker: Awaited<ReturnType<typeof mountWorker>> | undefined
+  try {
+    worker = await mountWorker(exposed.worker, { host: exposed.host() })
+    assert.deepEqual(await contextOfRepo(worker), [
+      {
+        project: 'shop-api',
+        source: 'file',
+        lines: ['units is read from .conport.json only', '.conport.local.json is not ignored by git: add it to .gitignore']
+      }
+    ])
+    // The answers of the binding carry the lines too.
+    const set = await worker.request('project.set', { root: exposed.root, project: 'other' })
+    assert.deepEqual(set.ok ? set.data.lines.length : set, 2)
+  } finally {
+    await worker?.deactivate()
+    if (saved === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = saved
+    rmSync(config, { recursive: true, force: true })
+  }
 
   // A broken file names no project: neither the old place nor the binding stands in for it.
   const broken = fake([])
@@ -440,14 +448,6 @@ test('git that does not answer in time names no project, and nothing stands in f
     { project: null, source: 'file', lines: ['git failed (no answer in 0.2 s): ConPort settings were not read'] }
   ])
   await worker.deactivate()
-})
-
-test('the user env file is in XDG_CONFIG_HOME when it is set, else in .config of the home folder', async () => {
-  const { userEnvFile } = await import('./worker')
-  assert.equal(userEnvFile({ XDG_CONFIG_HOME: '/xdg' }, '/work/me'), join('/xdg', 'conport', '.env'))
-  for (const unset of [{}, { XDG_CONFIG_HOME: '' }, { XDG_CONFIG_HOME: '  ' }]) {
-    assert.equal(userEnvFile(unset, '/work/me'), join('/work/me', '.config', 'conport', '.env'), JSON.stringify(unset))
-  }
 })
 
 test('a command past its timeout is killed and told as a failure', async () => {

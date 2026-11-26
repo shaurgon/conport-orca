@@ -2,7 +2,7 @@
 import type { HandMode, IdeaRow, Refusal, Result, Roles, TakeOver } from './protocol'
 
 /** The conport CLI release the panel runs: kept equal to the CLI of the same repository. */
-export const CLI_VERSION = '0.16.0'
+export const CLI_VERSION = '0.17.0'
 
 /** How the CLI is started, as the person would type it. */
 export const CONPORT = ['npx', '-y', `conport@${CLI_VERSION}`]

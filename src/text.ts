@@ -451,7 +451,7 @@ const FAILURES: Record<string, FailureText> = {
     what: 'ConPort project not found',
     action: 'Check project_name in .conport.json or the project binding in the panel and try again.'
   },
-  no_api_key: { what: 'No ConPort API key', action: 'Add CONPORT_API_KEY to ~/.config/conport/.env and try again.' },
+  no_api_key: { what: 'No ConPort API key', action: 'Add the ConPort API key to ~/.config/conport/conport.key and try again.' },
   conport_unreachable: { what: 'ConPort did not answer', action: 'Check the network and try again.' },
   invalid_argument: { what: "The CLI did not accept the plugin's command", action: 'Update the plugin and try again.' },
   subagents_unavailable: {
@@ -476,7 +476,7 @@ function httpText(code: string): FailureText | undefined {
   const http = /^http_(\d{3})$/.exec(code)
   const status = http ? Number(http[1]) : 0
   if (status === 401 || status === 403) {
-    return { what: 'ConPort did not accept the API key', action: 'Check CONPORT_API_KEY in ~/.config/conport/.env and try again.' }
+    return { what: 'ConPort did not accept the API key', action: 'Check the ConPort API key in ~/.config/conport/conport.key and try again.' }
   }
   if (status >= 500) return { what: 'ConPort answered with an error', action: 'Wait a few minutes and try again.' }
   return undefined
