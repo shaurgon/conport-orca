@@ -1,6 +1,6 @@
 # ConPort SDD for Orca
 
-A right-sidebar panel to control a ConPort project from Orca by the stages of SDD: an idea is
+A right-sidebar panel to control a [ConPort](https://conport.app) project from Orca by the stages of SDD: an idea is
 worked through into a spec, a spec gets its plan and becomes an epic, and the epic is built. The
 panel shows what ConPort knows and acts on the project; the state of the agents and their
 questions stay in Orca, where they already are. The work is done by an agent — Claude Code, Codex

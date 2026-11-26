@@ -2,9 +2,15 @@
   "manifestVersion": 2,
   "id": "conport-orca",
   "name": "ConPort SDD",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "description": "Controls a ConPort project from Orca by SDD stage: epics in work with their spec and plan, specs waiting for a plan, ideas and team proposals, and epics outside SDD. Brainstorms an idea, plans and builds a spec, and starts the lead session of an epic in Claude Code, Codex or Cursor.",
   "license": "MIT",
+  "homepage": "https://conport.app",
+  "repository": "https://github.com/shaurgon/conport-orca",
+  "author": {
+    "name": "shaurgon",
+    "url": "https://conport.app"
+  },
   "icon": "images/icon.png",
   "cover": {
     "path": "images/cover.png",
